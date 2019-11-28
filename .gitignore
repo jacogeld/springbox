@@ -4,6 +4,7 @@
 
 worker
 bin/
+*.backup
 
 ################################################################################
 ## Archives.gitignore; from https://github.com/github/gitignore.git           ##
