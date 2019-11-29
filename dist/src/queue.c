@@ -4,7 +4,7 @@
  *			 OR see search.c
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.1
+ *	@version 1.2
  *	@date 2019-11-29
  *****************************************************************************/
  /* TODO: Convert from char *w to Work *w and create Work struct*/
@@ -81,7 +81,7 @@ void enqueue(char *w) {
 	end:
 	queue_len++;
 	if (DEBUG)  {
-		printf("<<<<<<enqueued: %s>>>>>>>\n", queue_tail->item);
+		printf("<<<<<<enqueued: %s>>>>>>>\n", new_node->item);
 	}
 }
 

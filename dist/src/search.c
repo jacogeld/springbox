@@ -6,10 +6,12 @@
  *  original process and box_ok code provided by Jaco Geldenhuys
  * 
  *	compile:	mpicc -o ../bin/search.o queue.c search.c
- *	run:		mpirun -np X ./search.o		where X is number processes
+ *	run:		mpirun -np X ./search.o	N
+ 		where X is number processes,
+	 	N alphabet size between 2 and 9 (default if not specified)
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.1
+ *	@version 1.2
  *	@date 2019-11-29
  *****************************************************************************/
 /* Includes */
@@ -25,11 +27,10 @@
 #define STATUS (1)						/* Prints status messages */
 #define PRINT_MAX (1)					/* Prints max whenever it is updated */
 #define STANDARD_SEARCH_DEPTH (5)		/* Depth to search per job */
-#define INITIAL_SEARCH_DEPTH (3)		/* Depth for initial run by ROOT */
-#define STANDARD_ALPHABET_SIZE (4)		/* Alphabet size */
+#define INITIAL_SEARCH_DEPTH (2)		/* Depth for initial run by ROOT */
+#define STANDARD_ALPHABET_SIZE (3)		/* Default alphabet size */
 
 /* Do not modify */
-#define LAST ('/' + STANDARD_ALPHABET_SIZE)
 #define VALID (1)						/* Signals for valid and invalid */
 #define INVALID (0)
 
@@ -48,20 +49,25 @@
 
 /*************************** global variables ******************************/
 
-/* Alphabet used -> alpha_size subset of alpha[] */
+/* TODO: BUG: If not stopping at max string, only after queue is empty,
+it will rarely segfault. Unknown cause. TODO bugfix this */
 
-/* TODO: BUG: occasionally an invalid case ends up on the queue. Failsafe covers
- * it but with needless checking. Work on patch ASAP */
- /* TODO: Convert queue to priority queue */
+/* Alphabet used -> alpha_size subset of alpha[] */
 int alpha_size = STANDARD_ALPHABET_SIZE;
 char alpha[] = {'0','1','2','3','4','5', '6', '7', '8', '9'};
+char last;	/* Last char to process in alphabet. Set in main */
 
 /* Theoretical longest word per alphabet size. l(n) = n(l(n-1) +2) */
 int max_word_size[] = {0, 2, 8, 30, 128, 650, 3912, 27398, 219200, 1972818};
-
+/* Properties of max word found */
 int max_length = 0;
 char *max_word;
+
 int my_id;		/* Process ID; set in main */
+/* V2 */
+int *BOT;	/* Box_occurance_table. Bit table of if box has occured */
+long *suff_table;	/* Suffix table for strings */
+int suffix_depth;
 /*********************** function prototypes *******************************/
 
 void process (char *word, int depth);		/* TODO: convert to inline*/
@@ -98,23 +104,46 @@ int main(int argc, char *argv[])
 	char *w; 
 	/* Keeps track of how many processes have been successfully stopped */
 	int active_processes, waiting_count = 0;
-	int *waiting_for_work;
+	int *waiting_for_work;	/* For when queue is empty and continuing */
 
-	/*TODO: Convert desired_size and malloc to handle alpha size from cmd */
-	desired_size = max_word_size[alpha_size];
-	max_word = (char*) malloc(sizeof(char) * (desired_size + 1));  /* +1 for '\0' */
-	max_word[0] = '\0';
-	
 	ierr = MPI_Init(&argc, &argv);
 	ierr = MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 	ierr = MPI_Comm_size(MPI_COMM_WORLD, &nbr_procs);
 
+	if (argc == 2) {
+		alpha_size = atoi(argv[1]);
+		if (alpha_size < 2 || alpha_size > 9) {
+			if (my_id == ROOT_PROCESS) {	/* prevents excess messages */
+				printf("Invalid/unknown alphabet size. Using N=3\n");
+			}
+			alpha_size = STANDARD_ALPHABET_SIZE;
+		}
+		else {
+			if (STATUS) {
+				if (my_id == ROOT_PROCESS) printf("Alphabet size: %d\n", alpha_size);
+			}
+		}
+	} else {
+		if (STATUS) {
+			if (my_id == ROOT_PROCESS) {
+				printf("Using default alphabet size: %d\n", STANDARD_ALPHABET_SIZE);
+			}
+		}
+	}
 
 	if (nbr_procs <= 1) {
-		printf("Usage: \"mpirun -np X %s\" where X is number processess > 1\n",
-			argv[0]);
+		if (my_id == ROOT_PROCESS) {
+			printf("Usage: \"mpirun -np X %s ALPHA_SIZE\" where X is number processess > 1\n",
+				argv[0]);
+		}
 		goto end;
 	}
+	/*TODO: Convert desired_size and malloc to handle alpha size from cmd */
+	desired_size = max_word_size[alpha_size];
+	suffix_depth = alpha_size + 1;
+	last = '/' + alpha_size;
+	max_word = (char*) malloc(sizeof(char) * (desired_size + 1));  /* +1 for '\0' */
+	max_word[0] = '\0';
 
 	waiting_for_work = malloc(sizeof(int) * nbr_procs);
 	for (i = 0; i < nbr_procs; i++) {
@@ -325,7 +354,7 @@ void process(char *word, int depth) {
 		if (limit-- < 0) { exit(1); }
 	}
 	/* TODO: remove this once queueing issue is gone */
-	if (deep_check(word,i) == INVALID) return;
+	/* if (deep_check(word,i) == INVALID) return; */
 	word[i] = '/';
 	while (i >= k) {
 		if (DEBUG) {
@@ -357,7 +386,7 @@ void process(char *word, int depth) {
 			continue;
 		}
 		word[i]++;
-		if (word[i] > LAST) {
+		if (word[i] > last) {
 			if (DEBUG) {
 				printf("done with this branch\n");
 			}
