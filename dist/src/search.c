@@ -3,12 +3,14 @@
  *	multiple workers at once. Relies on a queue-based system to handle jobs
  *	between workers.
  *
+ *  original process and box_ok code provided by Jaco Geldenhuys
+ * 
  *	compile:	mpicc -o ../bin/search.o queue.c search.c
- *	run:		mpirun -np X ../search.o		where X is number processes
+ *	run:		mpirun -np X ./search.o		where X is number processes
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.0
- *	@date 2019-11-28
+ *	@version 1.1
+ *	@date 2019-11-29
  *****************************************************************************/
 /* Includes */
 #include <stdio.h>
@@ -20,9 +22,11 @@
 /************************** Definitions and macros **************************/
 /* Configurations */
 #define DEBUG (0)						/* Enables debug output */
+#define STATUS (1)						/* Prints status messages */
+#define PRINT_MAX (1)					/* Prints max whenever it is updated */
 #define STANDARD_SEARCH_DEPTH (5)		/* Depth to search per job */
 #define INITIAL_SEARCH_DEPTH (3)		/* Depth for initial run by ROOT */
-#define STANDARD_ALPHABET_SIZE (3)		/* Alphabet size */
+#define STANDARD_ALPHABET_SIZE (4)		/* Alphabet size */
 
 /* Do not modify */
 #define LAST ('/' + STANDARD_ALPHABET_SIZE)
@@ -46,7 +50,9 @@
 
 /* Alphabet used -> alpha_size subset of alpha[] */
 
-/* BUG: occasionally an invalid case ends up on the queue */
+/* TODO: BUG: occasionally an invalid case ends up on the queue. Failsafe covers
+ * it but with needless checking. Work on patch ASAP */
+ /* TODO: Convert queue to priority queue */
 int alpha_size = STANDARD_ALPHABET_SIZE;
 char alpha[] = {'0','1','2','3','4','5', '6', '7', '8', '9'};
 
@@ -91,22 +97,28 @@ int main(int argc, char *argv[])
 	MPI_Status status;
 	char *w; 
 	/* Keeps track of how many processes have been successfully stopped */
-	int active_processes;
+	int active_processes, waiting_count = 0;
+	int *waiting_for_work;
 
 	/*TODO: Convert desired_size and malloc to handle alpha size from cmd */
 	desired_size = max_word_size[alpha_size];
 	max_word = (char*) malloc(sizeof(char) * (desired_size + 1));  /* +1 for '\0' */
 	max_word[0] = '\0';
-
 	
 	ierr = MPI_Init(&argc, &argv);
 	ierr = MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 	ierr = MPI_Comm_size(MPI_COMM_WORLD, &nbr_procs);
 
+
 	if (nbr_procs <= 1) {
 		printf("Usage: \"mpirun -np X %s\" where X is number processess > 1\n",
 			argv[0]);
 		goto end;
+	}
+
+	waiting_for_work = malloc(sizeof(int) * nbr_procs);
+	for (i = 0; i < nbr_procs; i++) {
+		waiting_for_work[i] = 0;
 	}
 
 	active_processes = nbr_procs - 1; /* Not including root */
@@ -116,6 +128,7 @@ int main(int argc, char *argv[])
 	/* Root/Master */
 	if (my_id == ROOT_PROCESS) {
 		/* Initial run to create branches for workers */
+		/* TODO: Create initial string from 1 of each alphabet character */
 		w[0] = '0';
 		w[1] = '\0';
 		process(w, INITIAL_SEARCH_DEPTH);
@@ -143,7 +156,7 @@ int main(int argc, char *argv[])
 		 * workload signal followed by workload */
 		queue_size = get_queue_size();
 		while (1) {
-			if (queue_size <= 0 ||max_length >= desired_size) {
+			if (queue_size <= 0 || max_length >= desired_size) {
 				stop = 1;
 			}
 			/* Recieve a reply */
@@ -164,6 +177,9 @@ int main(int argc, char *argv[])
 						MPI_COMM_WORLD);
 					MPI_Recv(max_word, max_length, MPI_CHAR, an_id,
 						MAX_STRING_TAG, MPI_COMM_WORLD, &status);
+					if (PRINT_MAX) {
+						printf("New max: %d %s\n", max_length, max_word);
+					}
 				}	
 				/* Send stop command if needed... */
 				if (stop) {
@@ -177,7 +193,14 @@ int main(int argc, char *argv[])
 					}
 				} /* ...or send the next work available in queue */
 				else if (!dequeue(w)) {
-					break;	/* Failsafe */
+					/* Queue temporarily empty;
+					 wait until next queue request to send data to process
+					 TODO: Verify that this works correctly. Hopefully never
+					 needs to run */
+					 if (STATUS) printf("stalled process %d due to empty queue\n",
+					 	an_id);
+					 waiting_for_work[an_id] = 1;
+					 waiting_count++;
 				}
 				else {
 					send_count = strlen(w);
@@ -196,21 +219,46 @@ int main(int argc, char *argv[])
 				enqueue_d(an_id, rec_count); */
 				MPI_Recv(w, rec_count, MPI_CHAR, an_id, QUEUE_TAG,
 					MPI_COMM_WORLD, &status);
+				w[rec_count] = '\0';
 				if (DEBUG) {
 					printf("(n)About to enqueue %s of size %d\n", w, rec_count);
 				}
 				enqueue(w);
 			}
 			queue_size = get_queue_size();
+			/* Send to stalled processes due to empty queue. Ideally never
+			   needs to run */
+			if (waiting_count > 0 && queue_size >= waiting_count) {
+				if (STATUS) {
+					printf("Recover from a stall due to empty queue\n");
+				}
+				for (i = 0; i < nbr_procs; i++) {
+					if (waiting_for_work[i] == 1) {
+						dequeue(w);
+						send_count = strlen(w);
+						if (DEBUG) {
+							printf("(n)Dequeued %s with length %d\n", w, send_count);
+						}
+						ierr = MPI_Send(&send_count, 1, MPI_INT, an_id,
+							NEW_WORK_TAG, MPI_COMM_WORLD);
+						ierr = MPI_Send(w, send_count, MPI_CHAR, an_id, WORK_TAG, 
+							MPI_COMM_WORLD);
+					}
+				}
+				waiting_count = 0;
+				queue_size = get_queue_size();
+			}
 		} 
 		/* qs == 0 => explored all || ml == ds => found a longest pattern */
 		/* Send stop signal to all processes */
 
 		/* print status */
+		printf("\n*********** FINISHED *********\n");
 		printf("max == %d\n", max_length);
 		printf("max word == %s\n", max_word);
 		printf("queue size == %d\n", get_queue_size());
 		printf("max valid? %d\n", deep_check(max_word, max_length));
+		printf("******************************\n\n");
 	}
 	
 	/* Worker/Slave */
@@ -252,7 +300,8 @@ int main(int argc, char *argv[])
 	}
 	
 	end: ierr = MPI_Finalize();
-	printf("***** PROCESS %d STOPPED ******\n", my_id);
+	free(waiting_for_work);
+	if (STATUS) printf("***** PROCESS %d STOPPED ******\n", my_id);
 	return EXIT_SUCCESS;
 }
 /*  Jaco's process code. TODO: Refactor 
@@ -291,6 +340,7 @@ void process(char *word, int depth) {
 				printf("too deep\n");
 			}
 			word[i] = '\0';
+			if (DEBUG) printf("(%d)string too deep %s\n", my_id, word);
 			if (valid) {
 			if (my_id != ROOT_PROCESS) {
 			/* TODO: Move to new enqueue_d function*/
@@ -450,8 +500,12 @@ int deep_check(char* str, int len) {
 		w[i] = c[i];
 		w[i+1] = '\0';
 		valid = box_valid(w, i);
-		if (valid == 0) return INVALID;
+		if (valid == 0){
+			free(w);
+			return INVALID;
+		}
 	}
+	free(w);
 	return VALID;
 }
 

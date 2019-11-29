@@ -1,6 +1,11 @@
 /******************************************************************************
- *  TODO: Describe code
- *  TODO: Compile & run commands
+ *	Standard priority queue. Designed to be utilised by search.c
+ *	compile:	gcc -Wall -W -pedantic -o queue.o queue.c
+ *			 OR see search.c
+ *
+ *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
+ *	@version 1.1
+ *	@date 2019-11-29
  *****************************************************************************/
  /* TODO: Convert from char *w to Work *w and create Work struct*/
 /* Includes */
@@ -21,6 +26,7 @@ int get_queue_size();
 
 typedef struct NodeStruct {
 	char *item;
+	int size;
 	struct NodeStruct *next;
 } Node;
 
@@ -36,15 +42,43 @@ int get_queue_size() {
 
 void enqueue(char *w) {
 	Node *new_node = (Node*) malloc(sizeof(Node));
+	Node *x = queue_head;
 	new_node->item = strdup(w);
+	new_node->size = strlen(w);
 	new_node->next = NULL;
-	if (queue_head == NULL) {
+	if (queue_head == NULL) { /* Empty queue */
 		queue_head = new_node;
+		queue_tail = new_node;
 	}
+	else if (queue_head->next == NULL) { /* Only one item currently in queue */
+		if (new_node->size < queue_head->size) {
+			queue_head->next = new_node;
+			queue_tail = new_node;
+		}
+		else {
+			new_node->next = queue_head;
+			queue_head = new_node;
+		}
+	}	/* Multiple items already in queue */
 	else {
-		queue_tail->next = new_node;
+		if (new_node->size >= x->size) {
+			new_node->next = x;
+			queue_head = new_node;
+		} 
+		else {
+			while (new_node->size < x->next->size) {
+				if (x->next == NULL) { /* If at end */
+					x->next = new_node;
+					queue_tail = new_node;
+					goto end;
+				}
+				x = x->next;
+			}
+			new_node->next = x->next;
+			x->next = new_node;
+		}
 	}
-	queue_tail = new_node;
+	end:
 	queue_len++;
 	if (DEBUG)  {
 		printf("<<<<<<enqueued: %s>>>>>>>\n", queue_tail->item);
@@ -65,5 +99,4 @@ int dequeue(char *w) {
 	}
 	queue_len--;
 	return SUCCESS;
-	
 }
