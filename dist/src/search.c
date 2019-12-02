@@ -11,7 +11,7 @@
 	 	N alphabet size between 2 and 9 (default if not specified)
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.2
+ *	@version 1.3
  *	@date 2019-11-29
  *****************************************************************************/
 /* Includes */
@@ -24,6 +24,7 @@
 /************************** Definitions and macros **************************/
 /* Configurations */
 #define DEBUG (0)						/* Enables debug output */
+#define DEBUG_V2 (0)					/* ^ for bitwise method */
 #define STATUS (1)						/* Prints status messages */
 #define PRINT_MAX (1)					/* Prints max whenever it is updated */
 #define STANDARD_SEARCH_DEPTH (5)		/* Depth to search per job */
@@ -45,8 +46,6 @@
 #define EXPECT_QUEUE_TAG	(2006)
 #define QUEUE_TAG			(2007)
 
-/* TODO: Allow dynamic setting via cmd line */
-
 /*************************** global variables ******************************/
 
 /* TODO: BUG: If not stopping at max string, only after queue is empty,
@@ -64,10 +63,14 @@ int max_length = 0;
 char *max_word;
 
 int my_id;		/* Process ID; set in main */
+
 /* V2 */
-int *BOT;	/* Box_occurance_table. Bit table of if box has occured */
-long *suff_table;	/* Suffix table for strings */
+unsigned long *ST;	/* Suffix_table for current. Table 1 */
 int suffix_depth;
+int *LOT;	/* Last_occurance_table; where alpha char last occured. Table 2 */
+void *BOT; /* Box_occurance_table. Bit table of if box has occured. Table 3 */
+unsigned long long BOT_size;	/* Number of bits in BOT */
+
 /*********************** function prototypes *******************************/
 
 void process (char *word, int depth);		/* TODO: convert to inline*/
@@ -98,8 +101,9 @@ void process_1(char *word, int depth);
 int main(int argc, char *argv[])
 {
 	/* Setup */
-	int ierr = 0, nbr_procs = 0, rec_count, send_count, an_id, i = 0,
+	int ierr = 0, nbr_procs = 0, rec_count, send_count, an_id, i = 0, j = 0,
 	queue_size = 0, desired_size, stop = 0;
+	long partial_sum = 0;
 	MPI_Status status;
 	char *w; 
 	/* Keeps track of how many processes have been successfully stopped */
@@ -109,7 +113,7 @@ int main(int argc, char *argv[])
 	ierr = MPI_Init(&argc, &argv);
 	ierr = MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 	ierr = MPI_Comm_size(MPI_COMM_WORLD, &nbr_procs);
-
+	/* Command line arguement details */
 	if (argc == 2) {
 		alpha_size = atoi(argv[1]);
 		if (alpha_size < 2 || alpha_size > 9) {
@@ -130,7 +134,6 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
-
 	if (nbr_procs <= 1) {
 		if (my_id == ROOT_PROCESS) {
 			printf("Usage: \"mpirun -np X %s ALPHA_SIZE\" where X is number processess > 1\n",
@@ -138,9 +141,8 @@ int main(int argc, char *argv[])
 		}
 		goto end;
 	}
-	/*TODO: Convert desired_size and malloc to handle alpha size from cmd */
+	/* constants and variable setup */
 	desired_size = max_word_size[alpha_size];
-	suffix_depth = alpha_size + 1;
 	last = '/' + alpha_size;
 	max_word = (char*) malloc(sizeof(char) * (desired_size + 1));  /* +1 for '\0' */
 	max_word[0] = '\0';
@@ -154,12 +156,31 @@ int main(int argc, char *argv[])
 
 	w = (char*) malloc(sizeof(char) * (max_word_size[alpha_size] + 1));
 
+	/* V2 setup */
+	ST = malloc(sizeof(long) * (alpha_size+1)); /* memset in process */
+	LOT = malloc(sizeof(int) * alpha_size);
+	suffix_depth = alpha_size + 1;
+	/*bit size of BOT. e.g. n=4: 4^1 + 4^2 + ... + 4^5 */
+	for (i = 1; i <= suffix_depth; i++) {
+		partial_sum = 1;
+		for (j = 1; j <= i; j++) {
+			partial_sum *= alpha_size;
+		}
+		BOT_size += partial_sum;
+	}
+	if (DEBUG_V2 && my_id == ROOT_PROCESS) printf("BOT_size: %lld\n", BOT_size);
+	/*Padding to next byte */
+	BOT_size += BOT_size % 8;
+	BOT = malloc(BOT_size);
+
 	/* Root/Master */
 	if (my_id == ROOT_PROCESS) {
 		/* Initial run to create branches for workers */
-		/* TODO: Create initial string from 1 of each alphabet character */
-		w[0] = '0';
-		w[1] = '\0';
+		/* Initial start is 1 of each alphabet character */
+		for (i = 0; i < alpha_size; i++) {
+			w[i] = alpha[i];
+		}
+		w[i] = '\0';
 		process(w, INITIAL_SEARCH_DEPTH);
 
 		MPI_Barrier(MPI_COMM_WORLD);
@@ -329,11 +350,15 @@ int main(int argc, char *argv[])
 	}
 	
 	end: ierr = MPI_Finalize();
+
 	free(waiting_for_work);
+	free(ST);
+	free(LOT);
+	free(BOT);
 	if (STATUS) printf("***** PROCESS %d STOPPED ******\n", my_id);
 	return EXIT_SUCCESS;
 }
-/*  Jaco's process code. TODO: Refactor 
+/*  Jaco's process code merged with V2 additions
  *	Adds characters to pattern until certain depth is reached, checking that
  *	each new addition is box-valid. Once certain depth is reached, the remaining
  *	possible branches are added to the queue for future iterations to handle.
@@ -345,16 +370,113 @@ int limit = 10000;
 
 void process(char *word, int depth) {
 	int k = strlen(word);
-	int i = k;
-	int valid = 1;
+	int i = 0, j = 0, letter = 0, lc;
+	int valid = 1, next;
+	char *temp_ptr;
+	unsigned long *new_ST;
+	unsigned long long exponent = 0, exponent_2, exp_temp, box;
+	unsigned long long word_v = 0, old_word_v = 0, temp = 0;
+	new_ST = malloc(sizeof(long) * (alpha_size+1));
+	/* Reset tables */
+	memset(ST, 0, sizeof(long) * (alpha_size+1));
+	memset(LOT, 0, alpha_size * sizeof(int));
+	memset(BOT, 0, BOT_size/8);
+
 	if (DEBUG) {
 		printf("process(w==\"%s\")\n", word);
 		printf("k==%d\n", k);
 		printf("i==%d\n", i);
 		if (limit-- < 0) { exit(1); }
 	}
+	/* Temp: Convert string to long for V2. Queue will do this later
+	   stored in base (alpha_size) */
+	   /* TODO: Figure out how to handle long string (multiple longs) */
+	   /* TODO: Figure out how to actually check if valid using this approach */
+	exponent = 1;
+	for (j = k-1; j >= 0; j--) {	/* exponent = alpha_size ^ (k-1-j) */
+		word_v += (word[j] - alpha[0]) * exponent;
+		exponent *= alpha_size;
+	}
+	exponent /= alpha_size;
+	if (DEBUG_V2) {
+		printf("word = %s\t", word);
+		printf("word_v = %lld\texp = %lld\n", word_v, exponent);
+	}
+
+	/* Reconstruct ST, LOT, BOT */
+	old_word_v = word_v;
+	exp_temp = exponent;
+	for (i = 0; i < k; i++) {
+		/* Obtain letter from 'encoded' number */
+		if (exponent == 0) letter = word_v;
+		else {
+			letter = (word_v / exponent);
+		}
+
+		/* update BOT */
+		lc = LOT[letter];
+		if (lc != 0) {	/* Box occured */
+		/* Only adding most closest box as only one that will
+		   appear when using suffix table */
+		   if (i - lc > alpha_size + 1) {
+			   continue;
+		   }
+		   exponent_2 = exp_temp;
+		   temp = old_word_v;
+		   if (DEBUG_V2) printf("lc: %d\n", lc);
+		   for (j = 0; j < lc; j++) {	/* remove left of box */
+			   temp %= exponent_2;
+			   exponent_2 /= alpha_size;
+		   }
+		   if (DEBUG_V2) printf("temp: %lld\tword_v: %lld\tword_v mod exp: %lld\n",
+		   	temp, word_v, word_v % exponent);
+		   box = (temp - (word_v % exponent)) / exponent;
+		   if (DEBUG_V2) printf("box found. Value: %lld\n", box);
+		   /* flip bit */
+		   if (box > BOT_size) {
+			   /* Impossible situation failsafe for testing. TODO: remove */
+			   printf("WARNING: BOX > BOT_SIZE. %lld vs %lld\n", box, BOT_size);
+			   printf("word: %s\n", word);
+			   printf("i == %d, lc == %d\n", i, lc);
+			   printf("temp: %lld\tword_v: %lld\tword_v mod exp: %lld\n",
+			   	temp, word_v, word_v % exponent);
+			   return;
+		   }
+		   BOT += box;
+		   temp_ptr = (char*) BOT;
+		   *temp_ptr ^= 0x80;	/* Flip designated (most significant) bit */
+		   /* TODO: Check this. Possibly switch to char[] or short[] if need be */
+		   /* TODO problem: If accessing last bit, this method may segfault. FIXME */
+		   if (DEBUG_V2) printf("flipped char is now: %d\n", *temp_ptr);
+		   BOT -= box;
+		}
+
+		/* update LOT */
+		LOT[letter] = i;
+
+		/* Setup for next iteration */
+		word_v %= exponent;
+		exponent /= alpha_size;
+	}
+	word_v = old_word_v;
+
+	/* Update suffix table (ST) */
+	exponent = 1;
+	for (i = 0; i < alpha_size; i++) {	/* exp ^ alpha_size*/
+		exponent *= alpha_size;
+	}
+	if (DEBUG_V2) printf("exp: %lld\tword_v: %lld\n", exponent, word_v);
+	
+	for (i = alpha_size; i>=0; i--) {
+		ST[i] = word_v;
+		if (DEBUG_V2) printf("added suffix %lld at index %d\n", word_v, i);
+		word_v %= exponent;
+		exponent /= alpha_size;
+	}
+
 	/* TODO: remove this once queueing issue is gone */
 	/* if (deep_check(word,i) == INVALID) return; */
+	i = k;
 	word[i] = '/';
 	while (i >= k) {
 		if (DEBUG) {
@@ -370,35 +492,91 @@ void process(char *word, int depth) {
 			}
 			word[i] = '\0';
 			if (DEBUG) printf("(%d)string too deep %s\n", my_id, word);
-			if (valid) {
-			if (my_id != ROOT_PROCESS) {
-			/* TODO: Move to new enqueue_d function*/
-				MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
-					MPI_COMM_WORLD);
-				MPI_Send(word, i, MPI_CHAR, ROOT_PROCESS, QUEUE_TAG,
-					MPI_COMM_WORLD);
-			} else {
-				if (DEBUG) printf("(1)about to enqueue %s\n", word);
-				enqueue(word);
-			}
+			if (valid) {	/* Failsafe */
+				if (my_id != ROOT_PROCESS) {
+					/* TODO: Move to new enqueue_d function*/
+					MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
+						MPI_COMM_WORLD);
+					MPI_Send(word, i, MPI_CHAR, ROOT_PROCESS, QUEUE_TAG,
+						MPI_COMM_WORLD);
+				} else {
+					if (DEBUG) printf("(1)about to enqueue %s\n", word);
+					enqueue(word);
+				}
 			}
 			i--;
+			/* Update suffix table */
+			/* TODO: Test that reverse works properly */
+
+			if (DEBUG_V2) printf("undo: new_st:\n");
+			for (j = 0; j < alpha_size; j++) {
+				if (DEBUG_V2) printf("ST[%d] = %ld\n",j+1, ST[j+1]);
+				new_ST[j] = ST[j+1] / alpha_size;
+				if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
+			}
+			new_ST[alpha_size] = word_v % (alpha_size+1);
+			if (DEBUG_V2) printf("new_st: [%d] - %ld\n", alpha_size, new_ST[alpha_size]);
+			if (DEBUG_V2) printf("\n");
+			for (j = 0; j <= alpha_size; j++){
+				ST[j] = new_ST[j];
+			}
+
 			continue;
 		}
 		word[i]++;
+
 		if (word[i] > last) {
 			if (DEBUG) {
 				printf("done with this branch\n");
 			}
-			word[i] = '\0'; /* Temp */
+			word[i] = '\0'; /* Safety */
 			i--;
+
+			/* Update suffix table */
+			if (DEBUG_V2) printf("undo: new_st:\n");
+			for (j = 0; j < alpha_size; j++) {
+				if (DEBUG_V2) printf("ST[%d] = %ld\n",j+1, ST[j+1]);
+				new_ST[j] = ST[j+1] / alpha_size;
+				if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
+			}
+			new_ST[alpha_size] = word_v % (alpha_size+1);
+			if (DEBUG_V2) printf("new_st: [%d] - %ld\n", alpha_size, new_ST[alpha_size]);
+			if (DEBUG_V2) printf("\n");
+			for (j = 0; j <= alpha_size; j++){
+				ST[j] = new_ST[j];
+			}
+
 			continue;
 		}
+		/* clear new_table and check if valid. If valid, 'swap' new and old ST.
+		   next iteration will wipe new_st(old table) and go again */
+		/* Create new suffix table*/
+		memset(new_ST, 0, sizeof(long) * alpha_size+1);
+		next = word[i] - alpha[0];	/* TODO: Change to new method */
+
+		if (DEBUG_V2) printf("added: %c\n", word[i]);
+		new_ST[0] = next;
+		if (DEBUG_V2) {
+			printf("i = %d\n", i);
+			printf("Addition: new_st:\nnew_st: [%d] - %ld\n", 0, new_ST[0]);
+		}
+		for (j = 1; j <= alpha_size; j++) {
+			new_ST[j] = ST[j-1] * alpha_size + next;
+			if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
+		}
+		if (DEBUG_V2) printf("\n");
+
+		/* TODO: check if valid */
 		valid = box_valid(word,i);
 		if (valid) {
 			if (DEBUG) {
 				printf("no repeat box\n");
 			}
+			for (j = 0; j <= alpha_size; j++){
+				ST[j] = new_ST[j];
+			}
+			if (DEBUG_V2) printf("swapped: ST[] = {%ld, %ld, %ld}\n", ST[0], ST[1], ST[2]);
+
 			i++;
 			if (i > max_length) {
 				max_length = i;
@@ -413,6 +591,7 @@ void process(char *word, int depth) {
 	if (DEBUG) {
 		printf("Done process\n");
 	}
+	free(new_ST);
 }
 
 /* Jaco's Box_ok function */
@@ -515,6 +694,8 @@ int box_valid(char* pattern, int len) {
 	return VALID;
 }
 
+/* TODO: Once O(1) search complete, convert deep_check to use the 3 tables
+   to check for repeating boxes */
 /*	Iterates over an entire pattern to confirm if it box-valid
  *	
  *	@param str	string to be checked
