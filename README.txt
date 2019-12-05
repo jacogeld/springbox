@@ -7,5 +7,6 @@ queue-based implementation.
 dist versions:
 Version 1: Priority-queue, MPI implementation
 	Last version before major V2 additions: V1.2
+V1.4, 1.5 are WIP and cannot run N != 2
 Version 2: Version 1 with O(1) search
 

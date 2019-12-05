@@ -14,7 +14,7 @@
  * more than the available number of cores. Else the program can lock (admin
  * process essentially waits for itself) 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.4
+ *	@version 1.5
  *	@date 2019-12-04
  *****************************************************************************/
 /* Includes */
@@ -31,6 +31,7 @@
 /************************** Definitions and macros **************************/
 /* Configurations */
 #define BUGFIX (0)
+#define STRING_TEST (0)
 #define DEBUG (0)						/* Enables debug output */
 #define DEBUG_V2 (0)					/* ^ for bitwise method */
 #define STATUS (1)						/* Prints status messages */
@@ -53,6 +54,32 @@
 #define MAX_STRING_TAG		(2005)
 #define EXPECT_QUEUE_TAG	(2006)
 #define QUEUE_TAG			(2007)
+
+/* Macros to avoid function calls. Slight speed boost */
+/* Revert BOT entry, if any */
+#define REVERT_BOT_ENTRY(j, word_v, exp_temp, letter, temp_ptr, box) do { \
+	exp_temp = alpha_size;	\
+	letter = (word_v % alpha_size);	\
+	if (DEBUG_V2) printf("word_v: %lld\n", word_v);	\
+	if (DEBUG_V2) printf("BOT_revert: letter: %d\n", letter);	\
+	for (j = 1; j <= alpha_size; j++) { /* find same char */	\
+		if (DEBUG_V2) printf("BOT_revert: searching: %lld\n", ((word_v % (exp_temp*alpha_size)) /exp_temp));	\
+		if (((word_v % (exp_temp*alpha_size)) /exp_temp) == letter) {	\
+			box = word_v % (exp_temp*alpha_size); /* box value */	\
+			if (DEBUG_V2) printf("BOT_revert: box %lld at j: %d\n", box, j);	\
+			BOT += box / 8;	\
+			temp_ptr = (char*) BOT;	\
+			exp_temp = 128;	\
+			for (j = 0; j < box % 8; j++) {	\
+				exp_temp /= 2;	\
+			}	\
+			*temp_ptr ^= exp_temp;	\
+			BOT -= box / 8;	\
+			break;	\
+		}	\
+		exp_temp *= alpha_size;	\
+	}	\
+} while (0)
 
 /*************************** global variables ******************************/
 
@@ -85,12 +112,14 @@ unsigned long long BOT_size;	/* Number of bits in BOT */
 
 /*********************** function prototypes *******************************/
 
-void process (char *word, int depth);		/* TODO: convert to inline*/
+void process (char *word, int depth, unsigned long long *word_arr, int len);		/* TODO: convert to inline*/
 int box_ok(char *word, int len); 			/* TODO: refactor and use below */
 int box_valid(char *word, int len);			
 int deep_check(char *string, int len);		
-void manual_check(char *string, int len);
-void process_1(char *word, int depth);
+int deep_check_l(unsigned long long *word_arr, int len);		
+char *longs_to_string(unsigned long long *arr, int len);
+unsigned long long *string_to_longs(char *string, int len);
+
 
 /**************************** functions ***********************************/
 
@@ -110,6 +139,7 @@ void process_1(char *word, int depth);
  *
  * @args none
 */
+/* TODO: N=1 breaks chars_per_long, and freezes program */
 int main(int argc, char *argv[])
 {
 	/* Setup */
@@ -130,7 +160,7 @@ int main(int argc, char *argv[])
 		alpha_size = atoi(argv[1]);
 		if (alpha_size < 2 || alpha_size > 9) {
 			if (my_id == ROOT_PROCESS) {	/* prevents excess messages */
-				printf("Invalid/unknown alphabet size. Using N=3\n");
+				printf("Invalid/unknown alphabet size. Using default.\n");
 			}
 			alpha_size = STANDARD_ALPHABET_SIZE;
 		}
@@ -163,7 +193,7 @@ int main(int argc, char *argv[])
 	for (i = 0; i < nbr_procs; i++) {
 		waiting_for_work[i] = 0;
 	}
-
+	/* TODO: If initial_depth^alpha_size < nbr_procs, initial_depth++ or smth*/
 	active_processes = nbr_procs - 1; /* Not including root */
 
 	w = (char*) malloc(sizeof(char) * (max_word_size[alpha_size] + 1));
@@ -197,7 +227,7 @@ int main(int argc, char *argv[])
 
 		if (STATUS) printf("char per long: %i\n", chars_per_long);
 		
-		process(w, INITIAL_SEARCH_DEPTH);
+		process(w, INITIAL_SEARCH_DEPTH, NULL, 0);
 
 		MPI_Barrier(MPI_COMM_WORLD);
 
@@ -221,8 +251,37 @@ int main(int argc, char *argv[])
 		 * string. Else, if need to stop, send stop signal. else send next
 		 * workload signal followed by workload */
 		queue_size = get_queue_size();
+		/* DELME */
+		if (STRING_TEST) {
+			printf("Test: L->S\n");
+			unsigned long long *arr = malloc(sizeof(unsigned long long) * 2);
+			char * str;
+			arr[0] = 1; str = longs_to_string(arr, 2);
+			printf("'01' -> '%s'\n", str);
+			free(str); arr[0] = 5; str = longs_to_string(arr, 3);
+			printf("'101' -> '%s'\n", str);
+			free(str); arr[0] = 3; str = longs_to_string(arr, 2);
+			printf("'11' -> '%s'\n", str);
+			free(str);
+			arr[0] = 0x8000000000000000;
+			arr[1] = 3;
+			str = longs_to_string(arr, 66);
+			printf("'100.....11' len=66 -> '%s'\n", str);
+			printf("Test: S->L\n");
+			unsigned long long *result;
+			free(str); str = longs_to_string(arr, 66);
+			result = string_to_longs(str, 66);
+			free(str);
+			printf("'01' -> %lld\n", (string_to_longs("01",2))[0]);
+			printf("'11' -> %lld\n", (string_to_longs("11",2))[0]);
+			printf("'101' -> %lld\n", (string_to_longs("101",3))[0]);
+			printf("arr[0] == result[0]: %d\n", result[0] == arr[0]);
+			printf("arr[1] == result[1]: %d\n", result[1] == arr[1]);
+			free(result); free(arr);
+		}
+		/* <DELME> */
 		while (1) {
-			if (queue_size <= 0/*|| max_length >= desired_size*/) {
+			if (queue_size <= 0 || max_length >= desired_size) {
 				stop = 1;
 			}
 			/* Recieve a reply */
@@ -362,7 +421,7 @@ int main(int argc, char *argv[])
 					printf("process %d recieved %s with %d\n",
 						my_id, w, rec_count);
 				}
-				process(w, STANDARD_SEARCH_DEPTH);		
+				process(w, STANDARD_SEARCH_DEPTH, NULL, 0);		
 
 				/* Send local max length back */
 				ierr = MPI_Send(&max_length, 1, MPI_INT, ROOT_PROCESS,
@@ -390,7 +449,7 @@ int main(int argc, char *argv[])
  * @param depth	how far to travel along the branches before queueing
 */
 
-void process(char *word, int depth) {
+void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	int k = strlen(word);
 	int i = 0, j = 0, letter = 0, lc, c,d, counter;
 	int valid = 1, next, o_valid, have_gone_back = 0; /*HGB: see BOT reverse */
@@ -603,27 +662,7 @@ void process(char *word, int depth) {
 			 (but can't use o_valid), so need to do a different check.
 			 Hence 'have_gone_back' variable */
 			if (o_valid || have_gone_back) {
-				exp_temp = alpha_size;
-				letter = word_v % alpha_size;
-				if (DEBUG_V2) printf("word_v: %lld\n", word_v);
-				if (DEBUG_V2) printf("BOT_revert: letter: %d\n", letter);
-				for (j = 1; j <= alpha_size; j++) { /* find same char */
-					if (DEBUG_V2) printf("BOT_revert: searching: %lld\n", ((word_v % (exp_temp*alpha_size)) /exp_temp));
-					if (((word_v % (exp_temp*alpha_size)) /exp_temp) == letter) {
-						box = word_v % (exp_temp*alpha_size); /* box value */
-						if (DEBUG_V2) printf("BOT_revert: box %lld at j: %d\n", box, j);
-						BOT += box / 8;
-						temp_ptr = (char*) BOT;
-						exp_temp = 128;
-						for (j = 0; j < box % 8; j++) {
-							exp_temp /= 2;
-						}
-						*temp_ptr ^= exp_temp;
-						BOT -= box / 8;
-						break;
-					}
-					exp_temp *= alpha_size;
-				}
+				REVERT_BOT_ENTRY(j, word_v, exp_temp, letter, temp_ptr, box);
 			}
 			have_gone_back = 1;
 			/* Update (revert to old) suffix table */
@@ -677,27 +716,7 @@ void process(char *word, int depth) {
 		if (word[i] != alpha[0]) {
 			/* Update (revert) BOT entry, if any */
 			if (o_valid || have_gone_back) {
-				exp_temp = alpha_size;
-				letter = (word_v % alpha_size);
-				if (DEBUG_V2) printf("word_v: %lld\n", word_v);
-				if (DEBUG_V2) printf("BOT_revert: letter: %d\n", letter);
-				for (j = 1; j <= alpha_size; j++) { /* find same char */
-					if (DEBUG_V2) printf("BOT_revert: searching: %lld\n", ((word_v % (exp_temp*alpha_size)) /exp_temp));
-					if (((word_v % (exp_temp*alpha_size)) /exp_temp) == letter) {
-						box = word_v % (exp_temp*alpha_size); /* box value */
-						if (DEBUG_V2) printf("BOT_revert: box %lld at j: %d\n", box, j);
-						BOT += box / 8;
-						temp_ptr = (char*) BOT;
-						exp_temp = 128;
-						for (j = 0; j < box % 8; j++) {
-							exp_temp /= 2;
-						}
-						*temp_ptr ^= exp_temp;
-						BOT -= box / 8;
-						break;
-					}
-					exp_temp *= alpha_size;
-				}
+				REVERT_BOT_ENTRY(j, word_v, exp_temp, letter, temp_ptr, box);
 			}
 			word_v++;
 			have_gone_back = 0;
@@ -832,7 +851,7 @@ void process(char *word, int depth) {
 			}
 			/* Setup for next run */
 			word[i] = '/';
-		} else if (DEBUG && 0) {
+		} else if (DEBUG) {
 			printf("repeated box\n");
 		}
 	}
@@ -922,6 +941,8 @@ int box_valid(char* pattern, int len) {
 	return VALID;
 }
 
+/*************************** Utility Functions ********************************/
+
 /* TODO: Once O(1) search complete, convert deep_check to use the 3 tables
    to check for repeating boxes */
 /*	Iterates over an entire pattern to confirm if it box-valid
@@ -947,74 +968,130 @@ int deep_check(char* str, int len) {
 	return VALID;
 }
 
-/*	Iterates over the entire pattern, adding characters iterably and states
- *	whether the pattern is box-valid at each character added.
- *	(Like deepcheck, except reports via stdout at each iteration)
- *
- *	@param str 	string to be checked
- *	@param len	length of string
- */
-void manual_check(char *str, int len) {
-	char *c = str;
-	char *w = malloc(sizeof(char) * (len + 1));
-	int i, valid = 1;
-	printf("local test\n");
-	for (i = 0; i < len; i++) {
-		w[i] = c[i];
-		w[i+1] = '\0';
-		valid = box_valid(w,i);
-		printf("i:%d\tValid:%d\n", i, valid);
+/* len - length of 'string' (# characters) */
+int deep_check_l(unsigned long long *word_arr, int len) {
+	unsigned long long word_v, old_word_v, exponent, exp_temp, box;
+	int size = (int) (len / chars_per_long); /* # longs */
+	int i, j, k, c, valid = VALID, count;
+	char *temp_ptr;
+	void *BOT2 = malloc(BOT_size);
+	int *LOT2 = malloc(sizeof(int) * alpha_size);
+	memset(BOT2, 0, BOT_size/8);
+	memset(LOT2, 0, alpha_size * sizeof(int));
+
+	if (len % chars_per_long != 0) {
+		size++;	/* Extra long if needed */
 	}
-	free(w);
-}
-
-/* Refactoring in progress. Do not use */
-void process_1(char *word, int depth) {
-	int k = strlen(word), i = k, valid = 1, diff = alpha[0] + alpha_size - 1;
-	char nul = alpha[0] - 1;
-
-	word[i] = nul;
-	while (i >= k) {
-		if (i == k + depth) {
-			word[i] = '\0';
-			if (my_id != ROOT_PROCESS) {
-			/* TODO: Move to new enqueue_d function*/
-				MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
-					MPI_COMM_WORLD);
-				MPI_Send(word, i, MPI_CHAR, ROOT_PROCESS, QUEUE_TAG,
-					MPI_COMM_WORLD);
+	for (i = 0; i < size; i++) {
+		if (i < size - 1) { /* Non-last -> full long */
+			count = chars_per_long;
+			exponent = pow(alpha_size, chars_per_long -1);
+			/* TODO: Check */
+		}
+		else {	/* last long, could be < chars_per_long */
+			count = len - (i * chars_per_long);
+			exponent = pow(alpha_size, count - 1);
+			/* TODO: Check */
+		}
+		/* TODO: update LOT & use for boxes */
+		old_word_v = word_v;
+		exp_temp = exponent;
+		for (j = 0; j < count; j++) { /* What if last long? */
+			/* Calculate box */
+				/* Handle boxes in this long */
+				/* handle boxes than underflowed to previous long */
+			/* Check if BOT entry != 0. If so, return 0. else update BOT */
+				/* Move (box/8) bytes and change (box%8) bit */
+			if (DEBUG_V2) printf("box value: %lld\n", box);
+			BOT2 += box / 8;
+			exp_temp = 128;
+			for (j = 0; j < box % 8; j++) {
+				exp_temp /= 2;
+			}
+			temp_ptr = (char*) BOT2;
+			c = (*temp_ptr) & (exp_temp);
+			if (DEBUG_V2) printf(">c == %d\n", c);
+			if (c == 0) {
+				if (DEBUG_V2) printf(">updating box\n");
+				*temp_ptr ^= exp_temp;
 			} else {
-				if (DEBUG) {
-					printf("(1)about to enqueue %s\n", word);
+				valid = INVALID;
+				goto end;
+			}
+			if (DEBUG_V2) {
+				printf("Bot now:\n");
+				temp_ptr = BOT2;
+				for (c = 0; c < BOT_size/8; c++) {
+					printf("[%d]: [%d]\n", c, *(temp_ptr+c));
 				}
-				enqueue_s(word);
+				BOT2 -= box/8;
 			}
-			i--;
-			continue;
 		}
-		word[i]++;
-			/* outside bounds*/
-		if (word[i] >  diff) {
-			i--;
-			continue;
-		}
-		if (box_valid(word, i)) {
-			i++;
-			if (i > max_length) {
-				max_length = i;
-				word[i] = '\0';
-				strcpy(max_word, word);
-			}
-			word[i] = nul;
-		}
-		/* Insert */
-		/* Check if valid */
-		/* if valid, increment i */
-			/* if i = k+depth, queue and i-- */
-		/* increment w[i] */
-		/* if w[i] > '0' +  alpha_size - 1*/
-			/* i-- */
 	}
+	end:
+	free(BOT2);
+	return valid;
+}
+/* Converts an 'encoded string' (long format) to a string */
+char *longs_to_string(unsigned long long *arr, int len) {
+	char letter, *string = malloc(sizeof(char) * (len+1));
+	int i, j, count;
+	unsigned long long word_v, exponent;
+	int size = (int) (len / chars_per_long);	/* # longs */
+	if (len % chars_per_long != 0) {
+		size++;
+	}
+	for (i = 0; i < size; i++) { /* For each long */
+		word_v = arr[i];
+		if (i < size - 1) { /* Non-last -> full long */
+			count = chars_per_long;
+			exponent = pow(alpha_size, chars_per_long -1);
+			/* TODO: Check */
+		}
+		else {	/* last long, could be < chars_per_long */
+			count = len - (i * chars_per_long);
+			exponent = pow(alpha_size, count - 1);
+			/* TODO: Check */
+		}
+		for (j = 0; j < count; j++) { /* Get chars from long */
+			letter = alpha[0] + word_v / exponent;
+			assert(letter >= alpha[0] && letter <= alpha[alpha_size]);
+			string[i * chars_per_long + j] = letter;
+			word_v %= exponent;
+			exponent /= alpha_size;
+		}
+	}
+	string[len] = '\0';
+	return string;
 }
 
+unsigned long long *string_to_longs(char *string, int len) {
+	int i, j, count, size = (int) (len / chars_per_long);
+	unsigned long long word_v, exponent, *arr;
 
+	if (len % chars_per_long != 0) {
+		size++;
+	}
+	arr = malloc(sizeof(unsigned long long) * size);
+	memset(arr, size, sizeof(unsigned long long));
+
+	for (i = 0; i < size; i++) { /* For each long */
+		word_v = 0;
+		if (i < size - 1) { /* Non-last -> full long */
+			count = chars_per_long;
+			exponent = pow(alpha_size, chars_per_long -1);
+			/* TODO: Check */
+		}
+		else {	/* last long, could be < chars_per_long */
+			count = len - (i * chars_per_long);
+			exponent = pow(alpha_size, count - 1);
+			/* TODO: Check */
+		}
+		for (j = 0; j < count; j++) { /* Get chars from long */
+			word_v += (string[i * chars_per_long + j] - alpha[0]) * exponent;
+			exponent /= alpha_size;
+		}
+	arr[i] = word_v;
+	}
+	return arr;
+}
