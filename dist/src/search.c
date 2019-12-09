@@ -18,7 +18,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.7
+ *	@version 1.8
  *	@date 2019-12-09
  *****************************************************************************/
 /* Includes */
@@ -62,16 +62,31 @@
 
 /* Macros to avoid function calls. Slight speed boost */
 /* Revert BOT entry, if any */
-#define REVERT_BOT_ENTRY(j, word_v, exp_temp, letter, temp_ptr, box) do { \
+/* TODO: Fix bot revert to handle (char_len+1). i=33 doesn't seem to be reset */
+#define REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr,temp, box, word_arr) do { \
+	unsigned long long preamble = 0; \
 	exp_temp = alpha_size;	\
+	d = count-1; \
+	temp = word_v; \
 	letter = (word_v % alpha_size);	\
+	box = 0; \
+	exponent_2 = 1;	/*TODO TEST NEW METHOD */\
 	if (DEBUG_V2) printf("word_v: %lld\n", word_v);	\
 	if (DEBUG_V2) printf("BOT_revert: letter: %d\n", letter);	\
 	for (j = 1; j <= alpha_size; j++) { /* find same char */	\
-		if (DEBUG_V2) printf("BOT_revert: searching: %lld\n", ((word_v % (exp_temp*alpha_size)) /exp_temp));	\
-		if (((word_v % (exp_temp*alpha_size)) /exp_temp) == letter) {	\
-			box = word_v % (exp_temp*alpha_size); /* box value */	\
-			if (DEBUG_V2) printf("BOT_revert: box %lld at j: %d\n", box, j);	\
+		if (DEBUG_V2) printf("d: %d, count %d\n", d, count); \
+		if (d % (chars_per_long+1) == (chars_per_long) && count % (chars_per_long+1) != chars_per_long) { \
+			if (DEBUG_V2) printf("swapped to prev. long\n"); \
+			preamble = box; \
+			exponent_2 = exp_temp; \
+			exp_temp = 1; /* Alpha_size? */ \
+			temp = word_arr[count / chars_per_long -1]; \
+		} \
+		if (DEBUG_V2) printf("BOT_revert: searching: %lld\n", ((temp % (exp_temp*alpha_size)) /exp_temp));	\
+		box = temp % (exp_temp*alpha_size) * exponent_2 + preamble; /* box value TODO CHECK*/	\
+		if (((temp % (exp_temp*alpha_size)) /exp_temp) == letter) {	\
+			if (DEBUG_V2) printf("BOT_revert: box value: %lld at j: %d\n", box, j);	\
+			if (DEBUG_V2) printf("exp_temp: %lld, temp: %lld, exponent_2: %lld, preamble: %lld\n", exp_temp, temp, exponent_2, preamble); \
 			BOT += box / 8;	\
 			temp_ptr = (char*) BOT;	\
 			if (DEBUG_V2) printf("bot before: %d\n", *temp_ptr); \
@@ -88,6 +103,7 @@
 			break;	\
 		}	\
 		exp_temp *= alpha_size;	\
+		d--;\
 	}	\
 } while (0)
 
@@ -742,11 +758,13 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			}
 			i--;
 			/* TODO: Revert back to previous long if needed */
-			long_count = count / chars_per_long;
+			long_count = count / (chars_per_long+1);
 			arr[long_count] = word_v;
-			if (count % chars_per_long > 0) { /* Todo: fix to remove -1 */
+			printf("i--: long_count == %d, count == %d\n", long_count, count);
+			if (count % (chars_per_long+1) != 0 || count == 0) { /* Todo: used to be > 0 */
 				word_v /= alpha_size;
 			} else {
+				if (DEBUG_V2) printf("count: %d reverting to arr[%d]: %lld\n", count, long_count-1, arr[long_count-1]);
 				word_v = arr[long_count-1];
 			}
 			count--;
@@ -784,7 +802,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			 (but can't use o_valid), so need to do a different check.
 			 Hence 'have_gone_back' variable */
 			if (o_valid || have_gone_back) {
-				REVERT_BOT_ENTRY(j, word_v, exp_temp, letter, temp_ptr, box);
+				REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr, temp, box, word_arr);
 			}
 			have_gone_back = 1;
 			/* Update (revert to old) suffix table */
@@ -818,7 +836,9 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			/* TODO: Need to switch to old word_v here? */
 			long_count = count / (chars_per_long+1);
 			arr[long_count] = word_v;
-			if (count != 0 && count % chars_per_long == 0 && long_count > 0) { /* TODO: -1? */
+			if (DEBUG_V2) printf("<>long_count: %d, count : %d\n", long_count, count);
+			if (count != 0 && count % (chars_per_long+1) == 0 && long_count > 0) { /* TODO: -1? */
+				if (DEBUG_V2) printf("reverting to arr[%d] as count == %d\n", long_count-1, count);
 				word_v = arr[long_count-1];
 			}
 			count--;
@@ -861,7 +881,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		if (word[i] != alpha[0]) {
 			/* Update (revert) BOT entry, if any */
 			if (o_valid || have_gone_back) {
-				REVERT_BOT_ENTRY(j, word_v, exp_temp, letter, temp_ptr, box);
+				REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr, temp, box, word_arr);
 			}
 			word_v++;
 			have_gone_back = 0;
@@ -981,14 +1001,16 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			/* Potential bug earlier: TODO: What if count == chars_per_long? % == 0
 			Currently storing chars_per_long-1 */
 			long_count = count / (chars_per_long+1);
+			if (DEBUG_V2) printf("arr[%d] updated to %lld\n", long_count, word_v);
 			arr[long_count] = word_v;
-			printf("i == %d, it == %d, count == %d\n", i, it, count);
+			printf("i == %d, it == %d, count == %d, long_count == %d\n", i, it, count, long_count);
 			//if (count % chars_per_long < chars_per_long-1) { /* Todo: fix to remove -1 */
 			if (count % chars_per_long != 0 || count == 0) {
 				word_v *= alpha_size;
 			} else {
 				printf("increasing long count & realloc\n");
 				arr[long_count] = word_v;
+				printf("arr[%d] == %lld\n", long_count, word_v);
 				word_v = 0;
 				word_arr = realloc(word_arr, sizeof(unsigned long long) * (long_count + 1));
 				arr[long_count + 1] = 0;
