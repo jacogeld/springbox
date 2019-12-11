@@ -19,7 +19,7 @@
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
  *	@version 1.10
- *	@date 2019-12-10
+ *	@date 2019-12-11
  *****************************************************************************/
 /* Includes */
 #include <stdio.h>
@@ -63,9 +63,9 @@
 
 /* Macros to avoid function calls. Slight speed boost */
 /* Revert BOT entry, if any */
-/* TWO BUGS: 1) BOT_REVERT doesn't always work for 00 on large i
-			 2) ST[4] often not reverted correctly on edges 
-			 3) Initial setup: ST wrong */
+/* Bug: If search_depth & initial line up with char_length, then will
+	rarely not track a box. Likely a bug in initial setup and box over
+	a rollover */
 /* D keeps track of when to switch to previous long's values. */
 #define REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr,temp, box, word_arr) do { \
 	unsigned long long preamble = 0; \
@@ -187,7 +187,7 @@
 			if (DEBUG_V2) printf("out of loop\n"); \
 		} \
 	} \
-	if (LOT[j] == -1 && i > alpha_size) printf("warning: LOT[%d] == -1 at i == %d", j, i); \
+	if (LOT[j] == -1 && i > alpha_size) printf("warning: LOT[%d] == -1 at i == %d\n", j, i); \
 } while (0)
 
 /* TODO: BUG: arr[] had 0 entries when string > chars_per_long
@@ -204,6 +204,7 @@ int max_word_size[] = {0, 2, 8, 30, 128, 650, 3912, 27398, 219200, 1972818};
 /* Properties of max word found */
 int max_length = 0;
 char *max_word;
+unsigned long long *word_l;
 /* Number of 'characters' that can fit in a long long */
 int chars_per_long;
 
@@ -330,11 +331,25 @@ int main(int argc, char *argv[])
 			w[i] = alpha[i];
 		}
 		w[i] = '\0';
+		//char str[] = "01233220010313020123213013032311231210301230231032123012032103203120310213202130210132013120132102301";
+		//printf("longest so far is valid? %d\n", deep_check(str, 101));
 
 		if (STATUS) printf("char per long: %i\n", chars_per_long);
 		
 		process(w, INITIAL_SEARCH_DEPTH, NULL, 0);
 
+		//char str[] = "01233232212030103120211020130321012032132002310320132102313201230231201312031230132031023012130213012310210321";
+		//printf("longest so far is valid? %d\n", deep_check(str, 101));
+
+		/* DELME: Reproducing bug */
+		//char str[] = "01233032013001221203213210113021";
+		//unsigned long long *word_arr = string_to_longs(str, 32);
+		//printf("test\n");
+		//process(str, 1, NULL, 0);
+		//printf("end. Queuesize: %d\n", get_queue_size());
+		/* POSSIBLE OVERFLOW IN BOT? failing adress 0x8 seems like a bitflip went wrong */
+		//exit(0);
+		/* <DELME> */
 		MPI_Barrier(MPI_COMM_WORLD);
 
 		/* Send initial instructions to each process */
@@ -357,47 +372,6 @@ int main(int argc, char *argv[])
 		 * string. Else, if need to stop, send stop signal. else send next
 		 * workload signal followed by workload */
 		queue_size = get_queue_size();
-		/* DELME */
-		if (STRING_TEST) {
-			printf("Test: L->S\n");
-			unsigned long long *arr = malloc(sizeof(unsigned long long) * 2);
-			char * str;
-			arr[0] = 1; str = longs_to_string(arr, 2);
-			printf("'01' -> '%s'\n", str);
-			free(str); arr[0] = 5; str = longs_to_string(arr, 3);
-			printf("'101' -> '%s'\n", str);
-			free(str); arr[0] = 3; str = longs_to_string(arr, 2);
-			printf("'11' -> '%s'\n", str);
-			free(str);
-			arr[0] = 0x8000000000000000;
-			arr[1] = 3;
-			str = longs_to_string(arr, 66);
-			printf("'100.....11' len=66 -> '%s'\n", str);
-			printf("Test: S->L\n");
-			unsigned long long *result;
-			free(str); str = longs_to_string(arr, 66);
-			result = string_to_longs(str, 66);
-			free(str);
-			printf("'01' -> %llu\n", (string_to_longs("01",2))[0]);
-			printf("'11' -> %llu\n", (string_to_longs("11",2))[0]);
-			printf("'101' -> %llu\n", (string_to_longs("101",3))[0]);
-			printf("arr[0] == result[0]: %d\n", result[0] == arr[0]);
-			printf("arr[1] == result[1]: %d\n", result[1] == arr[1]);
-			free(result); free(arr);
-		}
-		if (DEEP_TEST) {
-			unsigned long long *arr2 = malloc(sizeof(unsigned long long) * 2);
-			arr2[0] = 1; arr2[1] = 0;
-			printf("Deep_check test: '' -> valid?\n");
-			arr2[0] = 1; printf("01 -> %d\n", deep_check_l(arr2,2));
-			arr2[0] = 0; printf("00 -> %d\n", deep_check_l(arr2,2));
-			arr2[0] = 2; printf("10 -> %d\n", deep_check_l(arr2,2));
-			arr2[0] = 5; printf("101 -> %d\n", deep_check_l(arr2,3));
-			arr2[0] = 7; printf("111 -> %d\n", deep_check_l(arr2,3));
-
-
-		}
-		/* <DELME> */
 		while (1) {
 			if (queue_size <= 0 || max_length >= desired_size) {
 				stop = 1;
@@ -566,7 +540,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	int k = strlen(word), size, count, long_count;
 	int i = 0, j = 0, letter = 0, lc, c,d, counter, it, ii, flip;
 	int valid = 1, next, o_valid, have_gone_back = 0; /*HGB: see BOT reverse */
-	char *temp_ptr;
+	char *temp_ptr, *string;
 	unsigned long *new_ST;
 	unsigned long long exponent = 0, exponent_2,exponent_3, exp_temp, box;
 	unsigned long long *arr, word_v = 0, old_word_v = 0, temp = 0;
@@ -589,6 +563,8 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		}
 		printf("\n");
 	}
+
+	/* Number of longs needed to store the string */
 	size = (int) (len / chars_per_long);
 	if (len % chars_per_long != 0) {
 		size++;
@@ -596,11 +572,17 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	/* Temp: Convert string to long for V2. Queue will do this later
 	   stored in base (alpha_size) */
 	word_arr = string_to_longs(word, len);
-	/* temp fix */
-	//printf("max size: %d\n", max_word_size[alpha_size]/chars_per_long + 1);
+		/* Instead of needing to reallocate space every time an extra
+	   long is needed, allocate space for the maximum length word.
+	   When queueing/dequeueing, the array is 'shortened' as much
+	   as possible */
 	arr = realloc(word_arr, sizeof(unsigned long long) * (max_word_size[alpha_size]/chars_per_long + 1)); 
+	if (arr == NULL) { /* Failsafe */
+		fprintf(stderr, "Unable to realloc space - insufficient memory\n");
+		return;
+		/* TODO: send max = 0 to main to get next in queue, or exit program */
+	}
 	word_arr = arr;
-	//arr = word_arr;
 	if (DEBUG_V2) {
 		for (ii = 0; ii < size; ii++) {
 			printf("arr[%d]: %llu\n", ii, arr[ii]);
@@ -643,13 +625,12 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			/* Only adding most closest box as only one that will
 			appear when using suffix table */
 				if (i + (it * chars_per_long) - lc +1 > alpha_size) { /* internal box exists */
-					goto eloop;	/* TODO used to be continue; correct? */
+					goto eloop;
 				}
 				/* Calculate box */
 				if (DEBUG_V2) printf("exp_temp: %llu,\told_word_v: %llu\n", exp_temp, old_word_v);
 				exponent_2 = exp_temp;
 				temp = old_word_v;
-				/* TODO: Possible bug? check check */
 				j = lc / chars_per_long;
 				if (lc % chars_per_long == 0 && lc != 0) j--;
 				if (it == j) {
@@ -662,7 +643,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 					}
 					if (DEBUG_V2) printf("exponent: %llu\texponent_2: %llu\n", exponent, exponent_2);
 					if (DEBUG_V2) printf("temp: %llu\tword_v: %llu\n", temp, word_v);
-					//box = (temp - (word_v % exponent)) / exponent;
 					box = temp / exponent;	/* remove right of box */
 					if (DEBUG_V2) printf("box: %llu\n", box);
 					assert(box <= BOT_size);
@@ -670,35 +650,31 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				else {
 					/* TODO: Test */
 					if (DEBUG_V2) printf("spillover method\n");
-					if (DEBUG_V2) { \
-						printf("word: "); \
-						for (j = 0; j < k; j++) { \
-							printf("%c", word[j]); \
-						} \
-						printf("\nbox: %llu, temp %llu\n", box, temp); \
-				} \
-					/* handle boxes that spills over to previous long */
-					/*printf("<i: %d, it: %d, lc: %d>\n", i, it, lc);
-					printf("word: ");
-					for (j =0; j < k; j++) {
-						printf("%c", word[j]);
-					}
-					printf("\n"); */
+					if (DEBUG_V2) {
+						printf("word: ");
+						for (j = 0; j < k; j++) {
+							printf("%c", word[j]);
+						}
+					printf("word_v: %llu, box: %llu, temp %llu\n",
+						word_v,box, temp);
+				}
 					CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,i, box, it);
 				}
 				if (DEBUG_V2) printf("box found. Value: %llu\n", box);
 				/* flip bit */
 				/* Move (box/8) bytes and change (box%8) bit */
 				/* TODO: Can actually check box 1st as failsafe.  Quick */
-				BOT += box / 8;
-				temp_ptr = (char*) BOT;
-				exponent_2 = 128;
+				assert(box <= BOT_size);
+				//BOT += box / 8;
+				temp_ptr = (char*) (BOT + (int) (box/8));
+				flip = 128;
 				for (j = 0; j < box % 8; j++) {
-					exponent_2 /= 2;
+					flip /= 2;
 				}
-				*temp_ptr ^= exponent_2;
+				assert(((*temp_ptr) & flip) == 0);
+				*temp_ptr ^= flip;
 				if (DEBUG_V2) printf("Updated BOT entry %llu\n", box);
-				BOT -= box / 8;
+				//BOT -= box / 8;
 			}
 			eloop:
 			/* update LOT */
@@ -713,10 +689,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	}
 	it--;	/* pointing to last long in array */
 	/* Update suffix table (ST) */
-	//exponent = 1;
-	//for (i = 0; i < alpha_size; i++) {	/* exp ^ alpha_size*/
-	//	exponent *= alpha_size; /*TODO check what this does exactly */
-	//}
 	exponent = pow(alpha_size, alpha_size);
 	exponent_2 = exponent;
 	if (it == 0 || count > alpha_size) { /* first long or no underflow risk */
@@ -736,15 +708,9 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			ST[i] = word_v;
 			if (DEBUG_V2 || BUGFIX_2) printf("added suffix %llu at index %d\n", word_v, i);
 		}
-		/* TODO: Test */
 		word_v = word_arr[it-1];
 		exponent = pow(alpha_size, count);
 		exponent_2 = alpha_size;
-		/*for (i = alpha_size - (count -1); i > count-1; i--) {
-			ST[i + count-1] = ST[count-1] + (word_v % exponent) * exponent;
-			exponent *= alpha_size;
-			if (DEBUG_V2 || BUGFIX_2) printf("ST[%d] now %lu\n", i + count-1, ST[i+count-1]);
-		*/
 		for (i = count; i <= alpha_size; i++) { /* Previous long */
 			ST[i] = ST[count-1] + (word_v % exponent_2) * exponent;
 			exponent_2 *= alpha_size;
@@ -757,8 +723,10 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		}
 	}
 	/* TODO: remove this once queueing issue is gone */
-	if (deep_check(word,i) == INVALID) return;
+	//if (deep_check_l(word_arr, len) == INVALID) return;
+	if (deep_check(word, i) == INVALID) return;
 	if (BUGFIX_2) printf("end of setup\n");
+
 
 	/* Iterations */
 	i = k;
@@ -767,7 +735,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	word_v = old_word_v;
 	/* TODO: increase long count if needed */
 	word_v *= alpha_size;
-	//word_v--;
 	if (DEBUG_V2) printf("word_v == %llu\n", word_v);
 	word[i] = '/';
 	while (i >= k) {
@@ -803,14 +770,14 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				}
 			}
 			i--;
-			/* TODO: Revert back to previous long if needed */
+			/* Number of longs needed */
 			long_count = count / (chars_per_long);
 			if (count % chars_per_long == 0 && count != 0) {
 				long_count--; /* if last char, shouldn't increment count */
 			}
 			arr[long_count] = word_v;
 			if (DEBUG_V2) printf("i--: long_count == %d, count == %d\n", long_count, count);
-			if (count % (chars_per_long) != 1 || count == 1) { /* Todo: used to be > 0 */
+			if (count % (chars_per_long) != 1 || count == 1) {
 				word_v /= alpha_size;
 			} else {
 				if (DEBUG_V2) printf("count: %d reverting to arr[%d]: %llu\n", count, long_count-1, arr[long_count-1]);
@@ -838,7 +805,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		word[i]++;
 
 		if (word[i] > last) {
-			//if (word_v % alpha_size == alpha_size-1)
+			//if (word_v % alpha_size == alpha_size-1) {
 			if (DEBUG) {
 				printf("done with this branch\n");
 			}
@@ -861,16 +828,10 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				new_ST[j] = ST[j+1] / alpha_size;
 				if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
 			}
-			/* DELME 
-			exp_temp = 1;
-			for (j = 0; j <= alpha_size; j++) {
-				exp_temp *= alpha_size;
-			} */
 			exp_temp = pow(alpha_size, alpha_size+1);
 			/* Handling 'underflow' to multiple longs  in suffix table */
 			word_v /= alpha_size;
 			if (DEBUG_V2) printf("word_v / alpha_size. now %llu\n", word_v);
-			//new_ST[alpha_size] = word_v % exp_temp;
 			new_ST[alpha_size] = word_v % exp_temp;
 			if (BUGFIX) printf("word_v: %llu at i: %d\n", word_v, i);
 			j = (i+1) % chars_per_long;
@@ -943,6 +904,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		// else word_v++
 		if (DEBUG_V2) printf("word[i] == %c\n", word[i]);
 		if (word[i] != alpha[0]) {
+		//if (word_v % alpha_size != alpha[0]) {
 			/* Update (revert) BOT entry, if any */
 			if (o_valid || have_gone_back) {
 				REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr, temp, box, word_arr);
@@ -963,6 +925,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		/* Create new suffix table*/
 		memset(new_ST, 0, sizeof(long) * alpha_size+1);
 		next = word[i] - alpha[0];	/* TODO: Change to new method */
+		//next = word_v % alpha_size;
 
 		if (DEBUG_V2) printf("added: %c\n", word[i]);
 		new_ST[0] = next;
@@ -1022,22 +985,24 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			/* check if box ticked & update BOT if valid */
 			/* Move (box/8) bytes and change (box%8) bit */
 			if (DEBUG_V2) printf("box value: %llu\n", box);
-			BOT += box / 8;
-			exp_temp = 128;
+			assert(box <= BOT_size);
+			//BOT += box / 8;
+			temp_ptr = (char*) (BOT + (int) (box/8));
+			flip = 128;
 			for (j = 0; j < box % 8; j++) {
-				exp_temp /= 2;
+				flip /= 2;
 			}
-			temp_ptr = (char*) BOT;
-			c = (*temp_ptr) & (exp_temp);
+			c = (*temp_ptr) & (flip);
 			if (DEBUG_V2) printf(">c == %d\n", c);
 			if (c == 0) {
 				if (DEBUG_V2) printf(">updating box\n");
 				o_valid = 1;
-				*temp_ptr ^= exp_temp;
+				assert(((*temp_ptr) & flip) == 0);
+				*temp_ptr ^= flip;
 			} else {
 				o_valid = 0;
 			}
-			BOT -= box/8;
+			//BOT -= box/8;
 		}
 		if (o_valid == 1) {
 			have_gone_back = 0;
@@ -1236,7 +1201,7 @@ int deep_check(char* str, int len) {
 int deep_check_l(unsigned long long *word_arr, int len) {
 	unsigned long long word_v, old_word_v, exponent, exp_temp, box, temp, exponent_2, exponent_3;
 	int size = (int) (len / chars_per_long); /* # longs */
-	int i, j, k, c, valid = VALID, count, letter, lc;
+	int flip, i, j, k, c, valid = VALID, count, letter, lc;
 	char *temp_ptr;
 	void *BOT2 = malloc(BOT_size);
 	int *LOT2 = malloc(sizeof(int) * alpha_size);
@@ -1297,23 +1262,22 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 				/* Check if BOT entry != 0. If so, return 0. else update BOT */
 					/* Move (box/8) bytes and change (box%8) bit */
 				if (DEBUG_V2) printf("box value: %llu\n", box);
-				BOT2 += box / 8;
-				exponent_2 = 128;
+				temp_ptr = (char*) (BOT2 + (int) (box/8));
+				flip = 128;
+				assert(box <= BOT_size);
 				for (k = 0; k < box % 8; k++) {
-					exponent_2 /= 2;
+					flip /= 2;
 				}
-				temp_ptr = (char*) BOT2;
-				c = (*temp_ptr) & (exponent_2);
+				c = (*temp_ptr) & (flip);
 				if (DEBUG_V2) printf(">c == %d\n", c);
 				if (c == 0) {
 					if (DEBUG_V2) printf(">updating box\n");
-					*temp_ptr ^= exponent_2;
+					assert(((*temp_ptr) & flip) == 0);
+					*temp_ptr ^= flip;
 				} else {
 					valid = INVALID;
 					goto end;
 				}
-				BOT2 -= box/8;
-
 			}
 			eloop:
 			/* Update LOT */
@@ -1325,6 +1289,7 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 	}
 	end:
 	free(BOT2);
+	free(LOT2);
 	return valid;
 }
 /* Converts an 'encoded string' (long format) to a string */
@@ -1367,7 +1332,6 @@ unsigned long long *string_to_longs(char *string, int len) {
 	if (len % chars_per_long != 0) {
 		size++;
 	}
-	/*Temporary fix: */
 	arr = malloc(sizeof(unsigned long long) * size);
 	memset(arr, size, sizeof(unsigned long long));
 
