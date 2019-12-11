@@ -18,7 +18,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.10
+ *	@version 1.11.2
  *	@date 2019-12-11
  *****************************************************************************/
 /* Includes */
@@ -45,7 +45,7 @@
 #define PRINT_MAX (1)					/* Prints max whenever it is updated */
 
 #define STANDARD_SEARCH_DEPTH (5)		/* Depth to search per job */
-#define INITIAL_SEARCH_DEPTH (2)		/* Depth for initial run by ROOT */
+#define INITIAL_SEARCH_DEPTH (3)		/* Depth for initial run by ROOT */
 #define STANDARD_ALPHABET_SIZE (3)		/* Default alphabet size */
 
 /* Do not modify */
@@ -140,7 +140,12 @@
 	if (DEBUG_V2) printf("exponent_3: %llu\n", exponent_3); \
 	box += temp * exponent_3; /* TODO check if correct */ \
 	if (DEBUG_V2) printf("new box: %llu\n", box); \
-	assert(box <= BOT_size); \
+	/*DELME*/ \
+	if (box > BOT_size) { \
+		printf("box: %llu, lc: %d\n", box, lc); \
+	} \
+	/*<DELME>*/ \
+	assert(box <= BOT_size && 1); \
 	if (DEBUG_V2) printf("end of spillover method\n"); \
 } while(0)
 
@@ -245,7 +250,6 @@ int deep_check(char *string, int len);
  *
  * @args none
 */
-/* TODO: N=1 breaks chars_per_long, and freezes program */
 int main(int argc, char *argv[])
 {
 	/* Setup */
@@ -330,8 +334,15 @@ int main(int argc, char *argv[])
 			w[i] = alpha[i];
 		}
 		w[i] = '\0';
-		//char str[] = "01233220010313020123213013032311231210301230231032123012032103203120310213202130210132013120132102301";
-		//printf("longest so far is valid? %d\n", deep_check(str, 101));
+		/* Debugger TODO
+		char str[] = "01233032320312200110321321231320231023023123012013102130210320132012130130203210312031030101230";
+		printf("longest so far is valid? %d\n", deep_check(str, 95));
+		char str2[] = "012332320031131303223123103012010120";
+		printf("is this valid? %d\n",deep_check_l(string_to_longs(str2,36),36));
+		char str3[] = "012332322313213200101102012";
+		printf("is this valid? %d\n",deep_check_l(string_to_longs(str2,27),27));
+		*/
+
 
 		if (STATUS) printf("char per long: %i\n", chars_per_long);
 		
@@ -721,9 +732,16 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			printf("arr[%d] == %llu\n", j, word_arr[j]);
 		}
 	}
+	if (DEBUG_V2) {
+		for (ii = 0; ii < size; ii++) {
+			printf("arr[%d]: %llu\n", ii, arr[ii]);
+		} 
+
+	}
 	/* TODO: remove this once queueing issue is gone */
-	//if (deep_check_l(word_arr, len) == INVALID) return;
-	if (deep_check(word, i) == INVALID) return;
+	//if (deep_check_l(word_arr, len) == INVALID) return; //New check
+	/* BUG: deep_check_l has a bug. Find it TODO */
+	if (deep_check(word, i) == INVALID) return; //Old check
 	if (BUGFIX_2) printf("end of setup\n");
 
 
@@ -1213,7 +1231,7 @@ int deep_check(char* str, int len) {
 int deep_check_l(unsigned long long *word_arr, int len) {
 	unsigned long long word_v, old_word_v, exponent, exp_temp, box, temp, exponent_2, exponent_3;
 	int size = (int) (len / chars_per_long); /* # longs */
-	int flip, i, j, k, c, valid = VALID, count, letter, lc;
+	int flip, i, j, k, c, valid = VALID, count, letter, lc, temp_int;
 	char *temp_ptr;
 	void *BOT2 = malloc(BOT_size);
 	int *LOT2 = malloc(sizeof(int) * alpha_size);
@@ -1248,25 +1266,37 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 			/* Compare to LOT */
 			lc = LOT2[letter];
 			if (lc != 0) { /* box occured */
-				if (i - lc > alpha_size) { /* internal box exists */
+				if (j+1 + (i*chars_per_long) - lc > alpha_size) { /* internal box exists */
 					goto eloop;
 				}
 			
 				/* Calculate box */
 				exponent_2 = exp_temp;
 				temp = old_word_v;
-				if (((i * chars_per_long + j) / chars_per_long)
-						== (lc / chars_per_long)) {
+				temp_int = lc / chars_per_long;
+				if (lc % chars_per_long == 0 && lc != 0) temp_int--;
+				if (temp_int == i) {
+				//if (((i * chars_per_long + j) / chars_per_long)
+				//		== (lc / chars_per_long)) {
 					/* Handle boxes in this long */
-					lc %= chars_per_long;
-					for (k = 1; k < lc; k++) {	/* remove left of box */
+					temp_int = lc % chars_per_long;
+					for (k = 1; k < temp_int; k++) {	/* remove left of box */
 						temp %= exponent_2;
 						exponent_2 /= alpha_size;
 					}
 					box = temp / exponent;	/* remove right of box */
+					/*DELME*/
+					if (box > BOT_size) {
+						printf("box == %llu\n", box);
+						printf("len: %d, i: %d, j: %d, word_v == %llu\n",len,i,j,word_arr[i]);
+						printf("lc: %d, k: %d, count: %d, letter: %d\n",lc,k,count, letter);
+						printf("string: %s\n", longs_to_string(word_arr, len));
+					}
+					/*<DELME>*/
 					assert(box <= BOT_size);
 				}
 				else {
+					printf("letter: %d,i: %d, j:%d, lc: %d,len: %d, temp_int: %d\n",letter, i,j,lc,len, temp_int);
 					/* TODO: Test */
 					/* handle boxes that spills over to previous long */
 					CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,i, box,i);
@@ -1293,7 +1323,7 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 			}
 			eloop:
 			/* Update LOT */
-			LOT2[letter] = j+1;
+			LOT2[letter] = j+1 + (i * chars_per_long);
 			/* Setup for next iteration*/	
 			word_v %= exponent;
 			exponent /= alpha_size;
