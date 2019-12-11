@@ -38,10 +38,12 @@
 #define BUGFIX_2 (0)		/* DELME */
 #define STRING_TEST (0) 	/* DELME */
 #define DEEP_TEST (0) 		/* DELME */
+#define KILL_AT_ERROR (1)	/* Exit application if major error occurs */
 #define DEBUG (0)						/* Enables debug output */
 #define DEBUG_V2 (0)					/* ^ for bitwise method */
 #define STATUS (1)						/* Prints status messages */
 #define PRINT_MAX (1)					/* Prints max whenever it is updated */
+
 #define STANDARD_SEARCH_DEPTH (5)		/* Depth to search per job */
 #define INITIAL_SEARCH_DEPTH (2)		/* Depth for initial run by ROOT */
 #define STANDARD_ALPHABET_SIZE (3)		/* Default alphabet size */
@@ -141,8 +143,6 @@
 	assert(box <= BOT_size); \
 	if (DEBUG_V2) printf("end of spillover method\n"); \
 } while(0)
-/* Two bugs: 1: After revert, if LOT was at i=i-1, doesn't track
-2: [0] often gets set to 32 (first of last box) */
 
 #define REVERT_LOT(j, c, temp, it, word_arr, d, label_name) do { \
 	c += i / chars_per_long; /* TODO Check. Fix for over-mods */ \
@@ -190,8 +190,7 @@
 	if (LOT[j] == -1 && i > alpha_size) printf("warning: LOT[%d] == -1 at i == %d\n", j, i); \
 } while (0)
 
-/* TODO: BUG: arr[] had 0 entries when string > chars_per_long
-	Error in saving. Likely in long_count and getting set to 0 */
+
 /*************************** global variables ******************************/
 
 /* Alphabet used -> alpha_size subset of alpha[] */
@@ -219,14 +218,14 @@ unsigned long long BOT_size;	/* Number of bits in BOT */
 
 /*********************** function prototypes *******************************/
 
-void process (char *word, int depth, unsigned long long *word_arr, int len);		/* TODO: convert to inline*/
-int box_ok(char *word, int len); 			/* TODO: refactor and use below */
-int box_valid(char *word, int len);			
-int deep_check(char *string, int len);		
+void process (char *word, int depth, unsigned long long *word_arr, int len);
 int deep_check_l(unsigned long long *word_arr, int len);		
 char *longs_to_string(unsigned long long *arr, int len);
 unsigned long long *string_to_longs(char *string, int len);
 
+/* Old code */
+int box_valid(char *word, int len);			
+int deep_check(char *string, int len);	
 
 /**************************** functions ***********************************/
 
@@ -288,7 +287,7 @@ int main(int argc, char *argv[])
 			printf("Usage: \"mpirun -np X %s ALPHA_SIZE\" where X is number processess > 1\n",
 				argv[0]);
 		}
-		goto end;
+		goto end; /* Skips unneeded frees */
 	}
 	/* constants and variable setup */
 	desired_size = max_word_size[alpha_size];
@@ -341,13 +340,12 @@ int main(int argc, char *argv[])
 		//char str[] = "01233232212030103120211020130321012032132002310320132102313201230231201312031230132031023012130213012310210321";
 		//printf("longest so far is valid? %d\n", deep_check(str, 101));
 
-		/* DELME: Reproducing bug */
+		/* DELME: Reproducing bug <<found it: Related to realloc sometimes reducing space at the wrong time >>*/
 		//char str[] = "01233032013001221203213210113021";
 		//unsigned long long *word_arr = string_to_longs(str, 32);
 		//printf("test\n");
 		//process(str, 1, NULL, 0);
 		//printf("end. Queuesize: %d\n", get_queue_size());
-		/* POSSIBLE OVERFLOW IN BOT? failing adress 0x8 seems like a bitflip went wrong */
 		//exit(0);
 		/* <DELME> */
 		MPI_Barrier(MPI_COMM_WORLD);
@@ -515,13 +513,14 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
-	
-	end: ierr = MPI_Finalize();
 
+	free(max_word);
 	free(waiting_for_work);
 	free(ST);
 	free(LOT);
 	free(BOT);
+	end: 
+	ierr = MPI_Finalize();
 	if (STATUS) printf("***** PROCESS %d STOPPED ******\n", my_id);
 	return EXIT_SUCCESS;
 }
@@ -804,8 +803,8 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		assert(i <= max_word_size[alpha_size]);
 		word[i]++;
 
-		if (word[i] > last) {
-			//if (word_v % alpha_size == alpha_size-1) {
+		//if (word[i] > last) {
+		if (word_v % alpha_size == alpha_size-1) {
 			if (DEBUG) {
 				printf("done with this branch\n");
 			}
@@ -828,16 +827,20 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				new_ST[j] = ST[j+1] / alpha_size;
 				if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
 			}
+
 			exp_temp = pow(alpha_size, alpha_size+1);
-			/* Handling 'underflow' to multiple longs  in suffix table */
 			word_v /= alpha_size;
+
 			if (DEBUG_V2) printf("word_v / alpha_size. now %llu\n", word_v);
 			new_ST[alpha_size] = word_v % exp_temp;
 			if (BUGFIX) printf("word_v: %llu at i: %d\n", word_v, i);
+
+			/* Handling 'underflow' to multiple longs  in suffix table */
 			j = (i+1) % chars_per_long;
 			if (j == 0) j = chars_per_long;	/*chars_per -> end of long */
-			if (i % chars_per_long == chars_per_long-1) j = 0; /* chars_per-> reverted */
+			if (i % chars_per_long == chars_per_long-1) j = 0; /* -> reverted */
 			if (DEBUG_V2) printf("i+1 mod chars_per_long: %d\n", j);
+
 			if (j < alpha_size+1 && i / chars_per_long > 0) { /* previous long needed */
 				if (DEBUG_V2 || BUGFIX_2) printf("rollover revert for i:%d, j:%d\n",i, j);
 				/* TODO: Check if below accesses correct entry */
@@ -849,7 +852,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				new_ST[alpha_size] = new_ST[alpha_size-1] + d * pow(alpha_size, alpha_size);
 				if (DEBUG_V2) printf("letter: %d\n", d);
 				if (DEBUG_V2) printf("temp = %llu, j = %d, exp_temp = %llu, new_st[al] = %ld\n", temp, j , exp_temp, new_ST[alpha_size]);
-				/* TEST */
  			}
 			else {
 				if (BUGFIX) printf("non-rollover revert for i:%d, j:%d\n",i,j);
@@ -893,8 +895,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			continue;
 		}
 
-
-
 		if (DEBUG_V2) {
 			printf("LOT:\n");
 			for (j = 0; j < alpha_size; j++) {
@@ -924,8 +924,8 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			the main table */
 		/* Create new suffix table*/
 		memset(new_ST, 0, sizeof(long) * alpha_size+1);
-		next = word[i] - alpha[0];	/* TODO: Change to new method */
-		//next = word_v % alpha_size;
+		//next = word[i] - alpha[0]; /* Old method */
+		next = word_v % alpha_size;
 
 		if (DEBUG_V2) printf("added: %c\n", word[i]);
 		new_ST[0] = next;
@@ -942,7 +942,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 					j, new_ST[j], j, ST[j]);			
 			}
 		}
-		else {
+		else { /* Adding a new character to sequence */
 			for (j = 1; j <= alpha_size; j++) {
 				new_ST[j] = ST[j-1] * alpha_size + next;
 				if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
@@ -950,7 +950,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			}
 		}
 		if (DEBUG_V2) printf("\n");
-		for (j = 0; j <= alpha_size; j++) {
+		for (j = 0; j <= alpha_size; j++) { /* Copy ST over */
 			ST[j] = new_ST[j];
 		}
 		/* ---- V2: check if valid ---- */
@@ -1036,9 +1036,9 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				printf("ST[%d]: %lu\n", j, ST[j]);
 			}
 			exit(0);
-			return;
+			if (KILL_AT_ERROR) return;
 		}
-		if (valid) {
+		if (o_valid) {
 			if (DEBUG) {
 				printf("no repeat box\n");
 			}
@@ -1089,15 +1089,13 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	free(new_ST);
 	free(arr);
 }
-/* TODO: Create seperate functions for handling the long long[]
-	Convert to inline later */
 
-/* checks if the last character added to a pattern is box-valid (i.e. the box
- * ending in the len'th character is never repeated.
+/*	checks if the last character added to a pattern is box-valid (i.e. the box
+ *	ending in the len'th character is never repeated.
  *
- * @param pattern	pattern/string to be checked
- * @param len		length of pattern
- * @return		VALID or INVALID respectively
+ *	@param pattern	pattern to be checked, stored as a string
+ *	@param len		length of pattern
+ *	@return			VALID or INVALID respectively
  */
 
 /* TODO: Refactor */
@@ -1172,14 +1170,18 @@ int box_valid(char* pattern, int len) {
 
 /*************************** Utility Functions ********************************/
 
-/* TODO: Once O(1) search complete, convert deep_check to use the 3 tables
-   to check for repeating boxes */
-/*	Iterates over an entire pattern to confirm if it box-valid
- *	
- *	@param str	string to be checked
- *	@param len	length of string
- *	@return VALID or INVALID respectively
- */
+
+/* 	Performs a deep check of a pattern stored as a string
+*	in which all boxes inside the pattern are checked for repeats, not
+*  	just the last box added.
+*
+*	It does this by reconstructing the pattern, character by character,
+*	while checking boxes as it goes.
+*
+*	@param 	str		pattern stored as a string
+*	@param	len		length of the pattern
+*	@return			VALID or INVALID respectively
+*/
 int deep_check(char* str, int len) {
 	char *c = str;
 	char *w = malloc(sizeof(char) * (len+1));
@@ -1197,7 +1199,17 @@ int deep_check(char* str, int len) {
 	return VALID;
 }
 
-/* len - length of 'string' (# characters) */
+/* 	Performs a deep check of a pattern stored as an array of longs 
+*	in which all boxes inside the pattern are checked for repeats, not
+*  	just the last box added.
+*
+*	It does this by reconstructing the pattern, character by character,
+*	while checking boxes as it goes.
+*
+*	@param 	word_arr	pattern stored as a long array
+*	@param	len			length of the pattern (number of 'characters')
+*	@return				VALID or INVALID respectively
+*/
 int deep_check_l(unsigned long long *word_arr, int len) {
 	unsigned long long word_v, old_word_v, exponent, exp_temp, box, temp, exponent_2, exponent_3;
 	int size = (int) (len / chars_per_long); /* # longs */
@@ -1292,7 +1304,13 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 	free(LOT2);
 	return valid;
 }
-/* Converts an 'encoded string' (long format) to a string */
+
+/*	Converts a pattern stored as an array of longs into a string
+ *
+ *	@param	 arr	array of longs storing the pattern
+ * 	@param	 len	length of the pattern (number of 'characters')
+ * 	@return			String containing the pattern
+ */
 char *longs_to_string(unsigned long long *arr, int len) {
 	char letter, *string = malloc(sizeof(char) * (len+1));
 	int i, j, count;
@@ -1325,6 +1343,12 @@ char *longs_to_string(unsigned long long *arr, int len) {
 	return string;
 }
 
+/*	Converts a pattern stored as a string into an array of longs 
+ *
+ *	@param 	string	String containing pattern
+ *	@param	len		length of the string
+ *	@return			array of longs storing the pattern
+*/
 unsigned long long *string_to_longs(char *string, int len) {
 	int i, j, count, size = (int) (len / chars_per_long);
 	unsigned long long word_v, exponent, *arr;
