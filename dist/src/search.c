@@ -18,7 +18,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.11.2
+ *	@version 1.11.3
  *	@date 2019-12-11
  *****************************************************************************/
 /* Includes */
@@ -143,6 +143,7 @@
 	/*DELME*/ \
 	if (box > BOT_size) { \
 		printf("box: %llu, lc: %d\n", box, lc); \
+		printf("word_v: %llu, temp: %llu\n", word_arr[i], temp); \
 	} \
 	/*<DELME>*/ \
 	assert(box <= BOT_size && 1); \
@@ -739,9 +740,11 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 
 	}
 	/* TODO: remove this once queueing issue is gone */
-	//if (deep_check_l(word_arr, len) == INVALID) return; //New check
+	/* DELME Temp assert */
+	assert(deep_check_l(word_arr, len) == deep_check(word,i));
+	if (deep_check_l(word_arr, len) == INVALID) return; //New check
 	/* BUG: deep_check_l has a bug. Find it TODO */
-	if (deep_check(word, i) == INVALID) return; //Old check
+	//if (deep_check(word, i) == INVALID) return; //Old check
 	if (BUGFIX_2) printf("end of setup\n");
 
 
@@ -1287,19 +1290,18 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 					box = temp / exponent;	/* remove right of box */
 					/*DELME*/
 					if (box > BOT_size) {
-						printf("box == %llu\n", box);
-						printf("len: %d, i: %d, j: %d, word_v == %llu\n",len,i,j,word_arr[i]);
-						printf("lc: %d, k: %d, count: %d, letter: %d\n",lc,k,count, letter);
-						printf("string: %s\n", longs_to_string(word_arr, len));
+						printf("<Assertion failed\nbox == %llu\n", box);
+						printf("<len: %d, i: %d, j: %d, word_v == %llu\n",len,i,j,word_arr[i]);
+						printf("<lc: %d, k: %d, count: %d, letter: %d\n",lc,k,count, letter);
+						printf("<string: %s\n", longs_to_string(word_arr, len));
 					}
 					/*<DELME>*/
 					assert(box <= BOT_size);
 				}
 				else {
-					printf("letter: %d,i: %d, j:%d, lc: %d,len: %d, temp_int: %d\n",letter, i,j,lc,len, temp_int);
 					/* TODO: Test */
 					/* handle boxes that spills over to previous long */
-					CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,i, box,i);
+					CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,j, box,i);
 				}
 				/* Check if BOT entry != 0. If so, return 0. else update BOT */
 					/* Move (box/8) bytes and change (box%8) bit */
