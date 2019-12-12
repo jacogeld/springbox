@@ -3,8 +3,8 @@
  *	compile: see search.c
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.4
- *	@date 2019-12-04
+ *	@version 1.11.4
+ *	@date 2019-12-12
  *****************************************************************************/
 
 /* Includes */
@@ -21,9 +21,11 @@
 /* function prototypes */
 void enqueue_s(char *item);
 int dequeue_s(char *item);
-int get_queue_size();
+long long get_queue_size();
 void enqueue_l(unsigned long long *arr, int count);
 int dequeue_l(unsigned long long *arr, int *count);
+long long get_queue_size_l();
+
 
 typedef struct NodeStruct {
 	char *item;
@@ -40,16 +42,16 @@ typedef struct NodeStructL {
 /* globals */
 Node *queue_head = NULL;
 Node *queue_tail = NULL;
-int queue_len = 0;
+long long queue_len = 0;
 
 /* Temporarily having two queues, one for V1 and one for V2.
 	TODO replace string-based with long-based */
 NodeL *queue_head_l = NULL;
 NodeL *queue_tail_l = NULL;
-int queue_len_l = 0;
+long long queue_len_l = 0;
 
 /* functions */
-int get_queue_size() {
+long long get_queue_size() {
 	return queue_len;
 }
 
@@ -106,7 +108,7 @@ int dequeue_s(char *w) {
 	old_head = queue_head;
 	strcpy(w, queue_head->item);
 	queue_head = queue_head->next;
-	/*free(old_head->item); TODO QUERY: Uncomment? Once all working */ 
+	free(old_head->item); /*TODO QUERY: Uncomment? Once all working */ 
 	free(old_head); 
 	if (queue_head == NULL) {
 		queue_tail = NULL;
@@ -116,22 +118,30 @@ int dequeue_s(char *w) {
 }
 
 /*---------------------------------------------------------------*/
-int get_queue_size_l() {
+long long get_queue_size_l() {
 	return queue_len_l;
 }
 void enqueue_l(unsigned long long *arr, int count) {
 	NodeL *new_node = (NodeL*) malloc(sizeof(NodeL));
 	NodeL *x = queue_head_l;
 	int i, size = (int) (count / chars_per_long);
+	new_node->size = count;
+	new_node->next = NULL;
 	if (count % chars_per_long != 0) {
 		size++;	/* Extra long if needed */
 	}
-	new_node->item = malloc(sizeof(long long) * size);
+	if (new_node == NULL) {
+		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
+	}
+	printf("count: %d, size: %d, arr[0]: %llu\n",count,size, arr[0]);
+	new_node->item = malloc(sizeof(unsigned long long) * size);
+	if (new_node->item == NULL) {
+		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
+	}
+	//printf("enq: malloc complete. size: %d\n", size);
 	for (i = 0; i < size; i++) { /* Copy longs */
 		new_node->item[i] = arr[i];
 	}
-	new_node->size = count;
-	new_node->next = NULL;
 	if (queue_head_l == NULL) { /* Empty queue */
 		queue_head_l = new_node;
 		queue_tail_l = new_node;
@@ -165,32 +175,45 @@ void enqueue_l(unsigned long long *arr, int count) {
 		}
 	}
 	end:
+	//printf("enq finished\n");
 	queue_len_l++;
 }
-/* User must free arr before use. Count is set to length */
+/* 	User must ensure sufficient space allocated to arr beforehand.
+	Count is set to length */
 int dequeue_l(unsigned long long *arr, int* count) {
 	NodeL *old_head;
+	long long *ptr;
 	int i, size;
-	*count = queue_head_l->size;
+	*count = queue_head_l->size; 
+
 	size = (int) (*count / chars_per_long);
 	if (*count % chars_per_long != 0) {
 		size++;	/* Extra long if needed */
 	}
-	arr = malloc(sizeof(long long) * size);
-
-	for (i = 0; i < *count; i++) { /* Copy longs */
-		arr[i] = queue_head_l->item[i];
-	}
-	if (queue_head == NULL) {
+	//printf("count: %d\n", *count);
+	if (queue_head_l == NULL) {
 		return FAILURE;
 	}
+
+	if (arr == NULL) {
+		fprintf(stderr,"UNABLE TO MALLOC SPACE\n");
+		return FAILURE;
+	}
+	printf("deq:count: %d\n", *count);
+	for (i = 0; i < size; i++) { /* Copy longs */
+		//printf("i: %d\n",i);
+		arr[i] = queue_head_l->item[i];
+	}
+	//printf("2:\n");
 	old_head = queue_head_l;
 	queue_head_l = queue_head_l->next;
 	free(old_head->item);
-	free(old_head); 
+	free(old_head);
+	//printf("3:\n");
 	if (queue_head_l == NULL) {
 		queue_tail_l = NULL;
 	}
+	//printf("deq finished: %llu, %d\n", (*arr)[0], *count);
 	queue_len_l--;
 	return SUCCESS;
 }
