@@ -3,7 +3,7 @@
  *	compile: see search.c
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.11.4
+ *	@version 1.12
  *	@date 2019-12-12
  *****************************************************************************/
 
@@ -133,7 +133,6 @@ void enqueue_l(unsigned long long *arr, int count) {
 	if (new_node == NULL) {
 		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
 	}
-	printf("count: %d, size: %d, arr[0]: %llu\n",count,size, arr[0]);
 	new_node->item = malloc(sizeof(unsigned long long) * size);
 	if (new_node->item == NULL) {
 		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
@@ -199,7 +198,6 @@ int dequeue_l(unsigned long long *arr, int* count) {
 		fprintf(stderr,"UNABLE TO MALLOC SPACE\n");
 		return FAILURE;
 	}
-	printf("deq:count: %d\n", *count);
 	for (i = 0; i < size; i++) { /* Copy longs */
 		//printf("i: %d\n",i);
 		arr[i] = queue_head_l->item[i];

@@ -18,7 +18,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.11.4
+ *	@version 1.12
  *	@date 2019-12-12
  *****************************************************************************/
 /* Includes */
@@ -213,7 +213,7 @@ char last;	/* Last char to process in alphabet. Set in main */
 /* Theoretical longest word per alphabet size. l(n) = n(l(n-1) +2) */
 int max_word_size[] = {0, 2, 8, 30, 128, 650, 3912, 27398, 219200, 1972818};
 /* Properties of max word found */
-int max_length = 0;
+int max_length = 0, max_longs_needed;
 char *max_word;
 unsigned long long *word_l_arr;
 unsigned long long *max_word_l;
@@ -262,7 +262,7 @@ int main(int argc, char *argv[])
 {
 	/* Setup */
 	int ierr = 0, nbr_procs = 0, rec_count, send_count, an_id, i = 0, j = 0,
-	desired_size, stop = 0, count, max_longs_needed;
+	desired_size, stop = 0, count;
 	long partial_sum = 0;
 	long long queue_size = 0;
 	MPI_Status status;
@@ -271,9 +271,11 @@ int main(int argc, char *argv[])
 	int active_processes, waiting_count = 0;
 	int *waiting_for_work;	/* For when queue is empty and continuing */
 
+	/* MPI setup */
 	ierr = MPI_Init(&argc, &argv);
 	ierr = MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 	ierr = MPI_Comm_size(MPI_COMM_WORLD, &nbr_procs);
+
 	/* Command line arguement details */
 	if (argc == 2) {
 		alpha_size = atoi(argv[1]);
@@ -288,11 +290,10 @@ int main(int argc, char *argv[])
 				if (my_id == ROOT_PROCESS) printf("Alphabet size: %d\n", alpha_size);
 			}
 		}
-	} else {
-		if (STATUS) {
-			if (my_id == ROOT_PROCESS) {
-				printf("Using default alphabet size: %d\n", STANDARD_ALPHABET_SIZE);
-			}
+	}
+	else {
+		if (STATUS && my_id == ROOT_PROCESS) {
+			printf("Using default alphabet size: %d\n", STANDARD_ALPHABET_SIZE);
 		}
 	}
 	if (nbr_procs <= 1) {
@@ -309,15 +310,19 @@ int main(int argc, char *argv[])
 	max_word[0] = '\0';
 	chars_per_long = sizeof(long long int) * 8 / (log(alpha_size) / log(2));
 
+	/* Number of longs required to store maximum length pattern */
 	max_longs_needed = (int)(desired_size / chars_per_long);
 	if (desired_size % chars_per_long != 0) max_longs_needed++;
 	max_word_l = malloc(sizeof(long long) * max_longs_needed);
 	
+	/* Setup for empty queue situation */
 	waiting_for_work = malloc(sizeof(int) * nbr_procs);
 	for (i = 0; i < nbr_procs; i++) {
 		waiting_for_work[i] = 0;
 	}
-	memset(max_word_l, 0, sizeof(long long) * max_longs_needed);
+	for (i = 0; i < max_longs_needed; i++) {
+			max_word_l[i] = 0;
+		}
 	/* TODO: If initial_depth^alpha_size < nbr_procs, initial_depth++ or smth*/
 	active_processes = nbr_procs - 1; /* Not including root */
 
@@ -336,44 +341,30 @@ int main(int argc, char *argv[])
 		}
 		BOT_size += partial_sum;
 	}
-	if ( my_id == ROOT_PROCESS) printf("BOT_size: %llu\n", BOT_size);
 	/*Padding to next byte */
 	BOT_size += BOT_size % 8;
 	BOT = malloc(BOT_size);
 
 	/* Root/Master */
 	if (my_id == ROOT_PROCESS) {
-		if (STATUS) printf("char per long: %i\n", chars_per_long);
-
+		if (STATUS) {
+			printf("BOT_size: %llu\n", BOT_size);
+			printf("char per long: %i\n", chars_per_long);
+			printf("Longs needed for max: %d\n", max_longs_needed);
+		}
 		/* Initial run to create branches for workers */
 		/* Initial start is 1 of each alphabet character */
 		for (i = 0; i < alpha_size; i++) {
 			w[i] = alpha[i];
 		}
 		w[i] = '\0';
-		/* Debugger TODO
-		char str[] = "01233032320312200110321321231320231023023123012013102130210320132012130130203210312031030101230";
-		printf("longest so far is valid? %d\n", deep_check(str, 95));
-		char str2[] = "012332320031131303223123103012010120";
-		printf("is this valid? %d\n",deep_check_l(string_to_longs(str2,36),36));
-		char str3[] = "012332322313213200101102012";
-		printf("is this valid? %d\n",deep_check_l(string_to_longs(str2,27),27));
-		*/
 
 		word_l_arr = string_to_longs(w, alpha_size);
+		/* TEMP TODO DELME*/
+			w = realloc(w, max_word_size[alpha_size] + 1);
+		
 		process(w, INITIAL_SEARCH_DEPTH, word_l_arr, alpha_size);
 
-		//char str[] = "01233232212030103120211020130321012032132002310320132102313201230231201312031230132031023012130213012310210321";
-		//printf("longest so far is valid? %d\n", deep_check(str, 101));
-
-		/* DELME: Reproducing bug <<found it: Related to realloc sometimes reducing space at the wrong time >>*/
-		//char str[] = "01233032013001221203213210113021";
-		//unsigned long long *word_arr = string_to_longs(str, 32);
-		//printf("test\n");
-		//process(str, 1, NULL, 0);
-		//printf("end. Queuesize: %d\n", get_queue_size());
-		//exit(0);
-		/* <DELME> */
 		free(word_l_arr);
 		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
 		MPI_Barrier(MPI_COMM_WORLD);
@@ -381,22 +372,28 @@ int main(int argc, char *argv[])
 		/* Send initial instructions to each process */
 		/* dequeue_l results in corruption or segfaults. Overflow somehow? */
 		for (an_id = 1; an_id < nbr_procs; an_id++) {
-			if (!dequeue_s(w)  || !dequeue_l(word_l_arr, &send_count)) {
+			if (!dequeue_l(word_l_arr, &send_count)) {
+				printf("%d: dequeue failed\n", my_id);
 				break;	/* Failsafe */	
 			}
-			/* Transition temp *//*
+			/* Transition temp */ /*
 			char *str2 = longs_to_string(word_l_arr, send_count);
 			assert(strcmp(w,str2) == 0);
 			free(str2);
-			assert(send_count == strlen(w)); */
+			assert(send_count == strlen(w));*/
 			/*<Transition temp>*/
-			send_count = strlen(w);
+			//send_count = strlen(w);
 			if (DEBUG) {
-				printf("(1)Dequeued %s with length %d\n", w, send_count);
+				//printf("(1)Dequeued %s with length %d\n", w, send_count);
+				printf("<0>Dequeued [0]: %llu with length %d\n", word_l_arr[0], send_count);
+				printf("<0>queuesize: %lld\n", get_queue_size_l());
+
 			}
 			ierr = MPI_Send(&send_count, 1, MPI_INT, an_id, NEW_WORK_TAG,
 				MPI_COMM_WORLD);
-			ierr = MPI_Send(w, send_count, MPI_CHAR, an_id, WORK_TAG, 
+			UPDATE_COUNT(count, send_count);
+			if (DEBUG) printf("<0>send_count: %d, count: %d\n", send_count, count);
+			ierr = MPI_Send(word_l_arr, send_count, MPI_LONG_LONG, an_id, WORK_TAG, 
 				MPI_COMM_WORLD);
 		}
 
@@ -404,7 +401,7 @@ int main(int argc, char *argv[])
 		/* Wait for size found from process; if size > max, ask process to send
 		 * string. Else, if need to stop, send stop signal. else send next
 		 * workload signal followed by workload */
-		queue_size = get_queue_size();
+		queue_size = get_queue_size_l();
 		while (1) {
 			if (queue_size <= 0 || max_length >= desired_size) {
 				stop = 1;
@@ -421,17 +418,20 @@ int main(int argc, char *argv[])
 			if (status.MPI_TAG == SENDING_MAX_TAG) {
 				if (rec_count > max_length) {
 					max_length = rec_count;
-					if (DEBUG) printf("(n)New max found, requesting string\n");
 					/* Request longest string*/
 					MPI_Send(&rec_count, 1, MPI_INT, an_id, SEND_MAX_TAG,
 						MPI_COMM_WORLD);
-					MPI_Recv(max_word, max_length, MPI_CHAR, an_id,
+					UPDATE_COUNT(count, rec_count);
+					if (DEBUG) {
+						printf("<%d>New max found, requesting string.\t", my_id);
+						printf("size %d, rec-count %d\n", max_length, rec_count);
+					}
+					MPI_Recv(max_word_l, rec_count, MPI_LONG_LONG, an_id,
 						MAX_STRING_TAG, MPI_COMM_WORLD, &status);
-					max_word[rec_count] = '\0';
-					free(max_word_l);
-					max_word_l = string_to_longs(max_word,max_length);
+					free(max_word);
+					max_word = longs_to_string(max_word_l, max_length);
 					if (PRINT_MAX) {
-						printf("New max: %d %s\n", max_length, max_word);
+						printf("New max: %d -- %s\n", max_length, max_word);
 					}
 				}	
 				/* Send stop command if needed... */
@@ -445,7 +445,7 @@ int main(int argc, char *argv[])
 						break;
 					}
 				} /* ...or send the next work available in queue */
-				else if (!dequeue_s(w)) {
+				else if (!dequeue_l(word_l_arr, &send_count)) {
 					/* Queue temporarily empty;
 					 wait until next queue request to send data to process
 					 TODO: Verify that this works correctly. Hopefully never
@@ -457,30 +457,35 @@ int main(int argc, char *argv[])
 					waiting_count++;
 				}
 				else {
-					send_count = strlen(w);
 					if (DEBUG) {
-						printf("(n)Dequeued %s with length %d\n", w, send_count);
+						printf("(n)Dequeued [0]: %llu with length %d\n", word_l_arr[0], send_count);
+						printf("queuesize: %lld\n", get_queue_size_l());
 					}
 					ierr = MPI_Send(&send_count, 1, MPI_INT, an_id,
 						NEW_WORK_TAG, MPI_COMM_WORLD);
-					ierr = MPI_Send(w, send_count, MPI_CHAR, an_id, WORK_TAG, 
+					UPDATE_COUNT(count, send_count);
+					ierr = MPI_Send(word_l_arr, send_count, MPI_LONG_LONG, an_id, WORK_TAG, 
 						MPI_COMM_WORLD);
 				}
 			}
-			/* Need to queue a string */
+			/* Need to queue a pattern */
 			else if (status.MPI_TAG == EXPECT_QUEUE_TAG) {
 				if (stop) { /* New work  TODO rework */
 					stop = 0;
 				}
-			/* TODO: Move to new enqueue code 
-				enqueue_d(an_id, rec_count); */
-				assert(rec_count <= max_word_size[alpha_size]);
-				MPI_Recv(w, rec_count, MPI_CHAR, an_id, QUEUE_TAG,
+				count = rec_count;
+				rec_count = (int) (count / chars_per_long);
+				if (count % chars_per_long != 0) {
+					rec_count++;
+				}
+				assert(rec_count <= max_longs_needed);
+				MPI_Recv(word_l_arr, rec_count, MPI_LONG_LONG, an_id, QUEUE_TAG,
 					MPI_COMM_WORLD, &status);
-				w[rec_count] = '\0';
-				enqueue_s(w);
+				if (DEBUG) printf("<%d> asked to enqueue. word_l_arr[0]: %llu, size: %d, reccount: %d\n",
+					my_id, word_l_arr[0], count, rec_count);
+				enqueue_l(word_l_arr, count);
 			}
-			queue_size = get_queue_size();
+			queue_size = get_queue_size_l();
 			/* Send to stalled processes due to empty queue. Ideally never
 			   needs to run */
 			if (waiting_count > 0 && queue_size >= waiting_count) {
@@ -489,21 +494,26 @@ int main(int argc, char *argv[])
 				}
 				for (i = 0; i < nbr_procs; i++) {
 					if (waiting_for_work[i] == 1) {
-						dequeue_s(w);
+						dequeue_l(word_l_arr, &send_count);
 						send_count = strlen(w);
 						if (DEBUG) {
-							printf("(n)Dequeued %s with length %d\n", w, send_count);
+							printf("(n)Dequeued [0]: %llu with length %d\n", word_l_arr[0], send_count);
+							printf("queuesize: %lld\n", get_queue_size_l());
 						}
 						ierr = MPI_Send(&send_count, 1, MPI_INT, an_id,
 							NEW_WORK_TAG, MPI_COMM_WORLD);
-						ierr = MPI_Send(w, send_count, MPI_CHAR, an_id, WORK_TAG, 
+						UPDATE_COUNT(count, send_count);
+						ierr = MPI_Send(word_l_arr, send_count, MPI_LONG_LONG, an_id, WORK_TAG, 
 							MPI_COMM_WORLD);
 					}
 				}
 				waiting_count = 0;
-				queue_size = get_queue_size();
+				queue_size = get_queue_size_l();
 			}
-		} 
+		}
+		printf("finished\n");
+		//free(max_word); /* Needed? TODO*/
+		max_word = longs_to_string(max_word_l,max_length);
 		/* qs == 0 => explored all || ml == ds => found a longest pattern */
 		/* Send stop signal to all processes */
 
@@ -514,7 +524,7 @@ int main(int argc, char *argv[])
 		for (i = 0; i < desired_size/chars_per_long +1; i++) {
 			printf("max_word_l[%d]: %llu\n", i, max_word_l[i]);
 		}
-		printf("queue size == %lld\n", get_queue_size());
+		printf("queue size == %lld\n", get_queue_size_l());
 		printf("max valid? %d and %d\n", deep_check(max_word, max_length),
 		deep_check_l(max_word_l,max_length));
 		printf("******************************\n\n");
@@ -523,6 +533,10 @@ int main(int argc, char *argv[])
 	/* Worker/Slave */
 	else {
 		MPI_Barrier(MPI_COMM_WORLD);
+		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
+		for (i = 0; i < max_longs_needed; i++) {
+			word_l_arr[i] = 0;
+		}
 
 		/* Continue until a message is recieved stating you must stop */
 		while (status.MPI_TAG != STOP_TAG) {
@@ -532,21 +546,40 @@ int main(int argc, char *argv[])
 
 			/*if command is to send max string back, do that */
 			if (status.MPI_TAG == SEND_MAX_TAG) {
-				ierr = MPI_Send(max_word, max_length, MPI_CHAR,
+				send_count = max_length;
+				UPDATE_COUNT(count, send_count);
+				if (DEBUG) printf("<%d>: sending max of length %d, send_count %d\t",
+					my_id,max_length,send_count);
+				if (DEBUG) printf("value[0]: %llu\n", max_word_l[0]);
+				if (DEBUG) printf("value[1]: %llu\n", max_word_l[1]);
+				ierr = MPI_Send(max_word_l, send_count, MPI_LONG_LONG,
 					ROOT_PROCESS, MAX_STRING_TAG, MPI_COMM_WORLD);
 			}
 
 			 /* else if command is to get new work, get new work string */
 			else if (status.MPI_TAG == NEW_WORK_TAG) {
-				ierr = MPI_Recv(w, rec_count, MPI_CHAR, ROOT_PROCESS,
+				UPDATE_COUNT(count, rec_count);
+				ierr = MPI_Recv(word_l_arr, rec_count, MPI_LONG_LONG, ROOT_PROCESS,
 					WORK_TAG, MPI_COMM_WORLD, &status);
-				assert(rec_count <= max_word_size[alpha_size]);
-				w[rec_count] = '\0';
+				assert(rec_count <= max_longs_needed);
 				if (DEBUG) {
-					printf("process %d recieved %s with %d\n",
-						my_id, w, rec_count);
+					printf("process %d recieved [0]: %llu with length %d\n",
+						my_id, word_l_arr[0], count);
+					if (count > chars_per_long) {
+						printf("[1] == %llu\n", word_l_arr[1]);
+					}
 				}
-				process(w, STANDARD_SEARCH_DEPTH, NULL, 0);		
+				w = longs_to_string(word_l_arr,count);
+				if (DEBUG) {
+					printf("beginning process. w: %s\n", w);
+					printf("word_l_arr[0]: %llu, count: %d\n", word_l_arr[0], count);
+					printf("word_l_arr[1]: %llu\n", word_l_arr[1]);
+					printf("&word_l: %p\t&w: %p\n",&word_l_arr, &w);
+				}
+				/* TEMP TODO DELME*/
+					w = realloc(w, max_word_size[alpha_size] + 1);
+				process(w, STANDARD_SEARCH_DEPTH, word_l_arr, rec_count);		
+				free(w);
 
 				/* Send local max length back */
 				ierr = MPI_Send(&max_length, 1, MPI_INT, ROOT_PROCESS,
@@ -560,7 +593,7 @@ int main(int argc, char *argv[])
 	free(ST);
 	free(LOT);
 	free(BOT);
-	//free(word_l_arr); Safe? TODO
+	free(word_l_arr);
 	end: 
 	ierr = MPI_Finalize();
 	if (STATUS) printf("***** PROCESS %d STOPPED ******\n", my_id);
@@ -606,25 +639,22 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		printf("\n");
 	}
 
-	/* Number of longs needed to store the string */
-	size = (int) (len / chars_per_long);
-	if (len % chars_per_long != 0) {
-		size++;
-	}
-	/* Temp: Convert string to long for V2. Queue will do this later
-	   stored in base (alpha_size) */
-	word_arr = string_to_longs(word, len);
+	/* TODO: check that this fixes the i=32, w!= 0 at start bug*/
+	size = (int) (len / chars_per_long) + 1;
+
 		/* Instead of needing to reallocate space every time an extra
 	   long is needed, allocate space for the maximum length word.
 	   When queueing/dequeueing, the array is 'shortened' as much
 	   as possible */
-	arr = realloc(word_arr, sizeof(unsigned long long) * (max_word_size[alpha_size]/chars_per_long + 1)); 
+	//arr = realloc(word_arr, sizeof(unsigned long long) * max_longs_needed); 
+	arr = word_arr;
 	if (arr == NULL) { /* Failsafe */
 		fprintf(stderr, "Unable to realloc space - insufficient memory\n");
 		return;
 		/* TODO: send max = 0 to main to get next in queue, or exit program */
 	}
-	word_arr = arr;
+	//word_arr = arr;
+	assert(arr == word_arr);
 	if (DEBUG_V2) {
 		for (ii = 0; ii < size; ii++) {
 			printf("arr[%d]: %llu\n", ii, arr[ii]);
@@ -790,7 +820,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	word[i] = '/';
 	while (i >= k) {
 		if (DEBUG) {
-			printf("exploring position i==%d w==", i);
+			printf("exploring position i==%d count==%d w==", i, count);
 			for (ii = 0; ii <= i; ii++) {
 				printf("%c", word[ii]);
 			} 
@@ -798,9 +828,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			printf("word_v at start: %llu\n", word_v);
 		}
 		if (i == k + depth) {
-			if (DEBUG) {
-				printf("too deep\n");
-			}
 			word[i] = '\0';
 			if (DEBUG) {
 				printf("(%d)string too deep %s\n", my_id, word);
@@ -809,21 +836,26 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				if (my_id != ROOT_PROCESS) {
 					if (DEBUG) {
 						printf("(%d) asking to enqueue %s\n", my_id, word);
+						printf("word_arr[0] == %llu\n", word_arr[0]);
 					}
 					/* TODO: Move to new enqueue_d function*/
+					/* TODO: swap to count-1 */
 					MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
 						MPI_COMM_WORLD);
-					MPI_Send(word, i, MPI_CHAR, ROOT_PROCESS, QUEUE_TAG,
+					j = (int) ((count-1) / chars_per_long);
+					if ((count-1) % chars_per_long != 0) {
+						j++;
+					}
+					assert(j <= max_longs_needed);
+					MPI_Send(word_arr, j, MPI_LONG_LONG, ROOT_PROCESS, QUEUE_TAG,
 						MPI_COMM_WORLD);
 				} else {
-					if (DEBUG) printf("(0)about to enqueue %s\n", word);
-					enqueue_s(word);
-					/* Transition temp */
-					char *str = longs_to_string(word_arr, i);
-					assert(strcmp(word,str) == 0);
-					enqueue_l(word_arr,i);
-					free(str);
-					/*<Transition temp>*/
+					if (DEBUG) {
+						printf("(0)about to enqueue %s; i: %d, count-1: %d\n", word, i ,count-1);
+						printf("word_arr[0] == %llu\n", word_arr[0]);
+					}
+					enqueue_l(word_arr, count-1);
+					if (DEBUG) printf("queue count: %lld\n", get_queue_size_l());
 				}
 			}
 			i--;
@@ -832,6 +864,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			if (count % chars_per_long == 0 && count != 0) {
 				long_count--; /* if last char, shouldn't increment count */
 			}
+			/* TODO: possible first error*/
 			arr[long_count] = word_v;
 			if (DEBUG_V2) printf("i--: long_count == %d, count == %d\n", long_count, count);
 			if (count % (chars_per_long) != 1 || count == 1) {
@@ -920,6 +953,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			if (count % chars_per_long == 0 && count != 0) {
 				long_count--; /* if last char, shouldn't increment count */
 			}
+			/* TODO: possible bug here with long_count setting */
 			arr[long_count] = word_v;
 			if (DEBUG_V2) printf("<>long_count: %d, count : %d\n", long_count, count);
 			if (count % (chars_per_long) == 1 && count != 1 && long_count > 0) { /* TODO: -1? */
@@ -1040,11 +1074,10 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		if (box == -1) { /* No box */
 			o_valid = 1;
 		} else {
-			/* check if box ticked & update BOT if valid */
+			/* checks if box occured & update BOT if valid */
 			/* Move (box/8) bytes and change (box%8) bit */
 			if (DEBUG_V2) printf("box value: %llu\n", box);
 			assert(box <= BOT_size);
-			//BOT += box / 8;
 			temp_ptr = (char*) (BOT + (int) (box/8));
 			flip = 128;
 			for (j = 0; j < box % 8; j++) {
@@ -1060,7 +1093,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			} else {
 				o_valid = 0;
 			}
-			//BOT -= box/8;
 		}
 		if (o_valid == 1) {
 			have_gone_back = 0;
@@ -1119,13 +1151,17 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			if (count % chars_per_long != 0 || count == 0) {
 				word_v *= alpha_size;
 			} else {
-				if (DEBUG_V2) printf("increasing long count & realloc\n");
 				arr[long_count] = word_v;
-				if (DEBUG_V2) printf("arr[%d] == %llu\n", long_count, word_v);
 				word_v = 0;
 				//printf("{%d} realloc, number longs: %u\n", my_id, (long_count + 1));
 				//word_arr = realloc(word_arr, sizeof(unsigned long long) * (long_count + 2));
 				arr[long_count + 1] = 0;
+				if (DEBUG_V2) {
+					printf("[increasing long count\n");
+					printf("arr[%d] = %llu\n",long_count, arr[long_count]);
+					printf("arr[%d] = %llu\n", long_count+1, arr[long_count+1]);
+					printf("word_v now: %llu]\n", word_v);
+				}
 			}
 			count++;
 			if (DEBUG_V2) printf("word_v * alpha_size. now %llu\n", word_v);
@@ -1153,7 +1189,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		printf("Done process\n");
 	}
 	free(new_ST);
-	free(word_arr);
+	//free(word_arr);
 }
 
 /*	checks if the last character added to a pattern is box-valid (i.e. the box
@@ -1410,6 +1446,10 @@ char *longs_to_string(unsigned long long *arr, int len) {
 		}
 		for (j = 0; j < count; j++) { /* Get chars from long */
 			letter = alpha[0] + word_v / exponent;
+			if (!(letter >= alpha[0] && letter <= alpha[alpha_size])) {
+				printf("<<letter: %d, word_v: %llu, len: %d\n", letter, word_v, len);
+				printf("i: %d, j: %d, exponent: %llu>>\n",i,j, exponent);
+			}
 			assert(letter >= alpha[0] && letter <= alpha[alpha_size]);
 			string[i * chars_per_long + j] = letter;
 			word_v %= exponent;
