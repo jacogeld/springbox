@@ -18,7 +18,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.12.2
+ *	@version 1.13
  *	@date 2019-12-13
  *****************************************************************************/
 /* Includes */
@@ -611,7 +611,7 @@ int main(int argc, char *argv[])
 i.e. '0':  i=0, j=k=1 */
 /* process will free word_arr once finished */
 void process(char *word, int depth, unsigned long long *word_arr, int len) {
-	int k = strlen(word), size, count, long_count;
+	int k = len, size, count, long_count;
 	int i = 0, j = 0, letter = 0, lc, c,d, counter, it, ii, flip;
 	int valid = 1, next, o_valid, have_gone_back = 0; /*HGB: see BOT reverse */
 	char *temp_ptr, *string, next_char = '/';
@@ -619,7 +619,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	unsigned long long exponent = 0, exponent_2,exponent_3, exp_temp, box;
 	unsigned long long *arr, word_v = 0, old_word_v = 0, temp = 0;
 	new_ST = malloc(sizeof(long) * (alpha_size+1));
-	len = k;
 	/* Reset tables */
 	memset(ST, 0, sizeof(long) * (alpha_size+1));
 	memset(LOT, -1, alpha_size * sizeof(int));
@@ -639,25 +638,17 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		printf("\n");
 	}
 
-	/* TODO: check that this fixes the i=32, w!= 0 at start bug*/
 	size = (int) (len / chars_per_long);
 	if (len % chars_per_long != 0) {
 		size++;
 	}
-
+	/* TODO Move comment to main */
 		/* Instead of needing to reallocate space every time an extra
 	   long is needed, allocate space for the maximum length word.
 	   When queueing/dequeueing, the array is 'shortened' as much
 	   as possible */
-	//arr = realloc(word_arr, sizeof(unsigned long long) * max_longs_needed); 
 	arr = word_arr;
-	if (arr == NULL) { /* Failsafe */
-		fprintf(stderr, "Unable to realloc space - insufficient memory\n");
-		return;
-		/* TODO: send max = 0 to main to get next in queue, or exit program */
-	}
-	//word_arr = arr;
-	assert(arr == word_arr);
+
 	if (DEBUG_V2) {
 		for (ii = 0; ii < size; ii++) {
 			printf("arr[%d]: %llu\n", ii, arr[ii]);
@@ -724,7 +715,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				else {
 					/* TODO: Test */
 					if (DEBUG_V2) printf("spillover method\n");
-					if (DEBUG_V2) {
+					if (DEBUG_V2 && 0) {
 						printf("word: ");
 						for (j = 0; j < k; j++) {
 							printf("%c", word[j]);
@@ -804,9 +795,9 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	}
 	/* TODO: remove this once queueing issue is gone */
 	/* DELME Temp assert */
-	//free(word);
-	//word = longs_to_string(word_arr, len);
-	assert(deep_check_l(word_arr, len) == deep_check(word,i));
+	//free(string); TODO needed? 
+	string = longs_to_string(word_arr, len);
+	assert(deep_check_l(word_arr, len) == deep_check(string,i));
 	if (deep_check_l(word_arr, len) == INVALID) return; //New check
 	/* BUG: deep_check_l has a bug. Find it TODO */
 	//if (deep_check(word, i) == INVALID) return; //Old check
@@ -827,10 +818,10 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	/* TODO: increase long count if needed */
 	word_v *= alpha_size;
 	if (DEBUG_V2) printf("word_v == %llu\n", word_v);
-	word[i] = '/';
+	//word[i] = '/';
 	next_char = '/';
 	while (i >= k) {
-		if (DEBUG) {
+		if (DEBUG && 0) {
 			printf("exploring position i==%d count==%d w==", i, count);
 			for (ii = 0; ii <= i; ii++) {
 				printf("%c", word[ii]);
@@ -839,7 +830,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			printf("word_v at start: %llu\n", word_v);
 		}
 		if (i == k + depth) {
-			word[i] = '\0';
+			//word[i] = '\0';
 			if (DEBUG) {
 				printf("(%d)string too deep %s\n", my_id, word);
 			}
@@ -886,9 +877,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			}
 			count--;
 			next_char = alpha[0] + (word_v % alpha_size);
-			if (next_char != word[i]) {
-				printf("<3>next_char: %d\tword[i]: %d\n", next_char, word[i]);
-			}
 			
 			if (DEBUG_V2) printf("word_v / alpha_size. now %llu\n", word_v);
 			/* Update LOT */
@@ -907,7 +895,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			continue;
 		}
 		assert(i <= max_word_size[alpha_size]);
-		word[i]++;
+		//word[i]++;
 		next_char++;
 
 		//if (word[i] > last) {
@@ -915,7 +903,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			if (DEBUG) {
 				printf("done with this branch\n");
 			}
-			word[i] = '\0'; /* Safety */
+			//word[i] = '\0'; /* Safety */
 			i--;
 			/* Update (revert) BOT entry, if any */
 			/*	Caution: If 'undoing' last character added, need to
@@ -987,9 +975,6 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				ST[j] = new_ST[j];
 			}
 			next_char = alpha[0] + (word_v % alpha_size);
-			if (next_char != word[i]) {
-				printf("<2>next_char: %d\tword[i]: %d\n", next_char, word[i]);
-			}
 			/* Update LOT */
 			j = word_v % alpha_size;
 			c = i % (chars_per_long+1);
@@ -1013,11 +998,8 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			}
 		}
 		// else word_v++
-		if (DEBUG_V2) printf("word[i] == %c\n", word[i]);
-		if (next_char != word[i]) {
-			printf("<1>next_char: %d\tword[i]: %d\n", next_char, word[i]);
-		}
-		assert(next_char == word[i]);
+		if (DEBUG_V2 && 0) printf("word[i] == %c\n", word[i]);
+		//assert(next_char == word[i]);
 		//if (word[i] != alpha[0]) {
 		if (next_char != alpha[0]) {
 			/* Update (revert) BOT entry, if any */
@@ -1041,7 +1023,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 		memset(new_ST, 0, sizeof(long) * alpha_size+1);
 		next = word_v % alpha_size;
 
-		if (DEBUG_V2) printf("added: %c\n", word[i]);
+		if (DEBUG_V2 && 0) printf("added: %c\n", word[i]);
 		new_ST[0] = next;
 		if (DEBUG_V2) {
 			printf("i = %d\n", i);
@@ -1123,23 +1105,23 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			LOT[next] = i+1;
 		}
 		/*	------------------	*/
-		//word = longs_to_string(word_l_arr, count);
-		valid = box_valid(word,i);
+		/* Can't do string conversion here: word_l_arr not up to date */
+		/*valid = box_valid(string,i);
 		if (DEBUG_V2) {
 			printf("word_v == %llu\n", word_v);
 			printf("o_valid == %d, valid == %d, 0_valid == valid: %d\n",
 				o_valid, valid, o_valid==valid);
 		}
 		if (STATUS && o_valid != valid) {
-			/* If broken, print out nearby situation */
+			//If broken, print out nearby situation
 			printf("\nWarning: o_valid == %d, valid == %d, 0_valid == valid: %d\n",
 				o_valid, valid, o_valid==valid);
 			printf("word_v: %llu, box: %llu\n", word_v, box);
 			printf("last added: %lld, last occured: %d\n", word_v % alpha_size, lc);
 			printf("i: %d, count: %d, Word: ", i, count);
-			//string = longs_to_string(word_l_arr, count);
+			string = longs_to_string(word_l_arr, count);
 			for (j = 0; j < i+1; j++) {
-				printf("%c", word[j]);
+				printf("%c", string[j]);
 			}
 			printf("\nLOT:\n");
 			for (j = 0; j < alpha_size; j++){
@@ -1151,7 +1133,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			}
 			exit(0);
 			if (KILL_AT_ERROR) return;
-		}
+		}*/
 		if (o_valid) {
 			if (DEBUG) {
 				printf("no repeat box\n");
@@ -1192,10 +1174,10 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			assert(i <= max_word_size[alpha_size]);
 			if (i > max_length) {
 				max_length = i;
-				word[i] = '\0';
-				strcpy(max_word, word);
-				//free(max_word);
-				//max_word = longs_to_string(max_word_l, max_length);
+				//word[i] = '\0';
+				//strcpy(max_word, word);
+				free(max_word);
+				max_word = longs_to_string(max_word_l, max_length);
 				/*CHECK. Scaffold removal*/
 				ii = max_length / chars_per_long;
 				if (max_length % chars_per_long > 0) {
@@ -1206,7 +1188,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 				}
 			}
 			/* Setup for next run */
-			word[i] = '/';
+			//word[i] = '/';
 			next_char = '/';
 		} else if (DEBUG) {
 			printf("repeated box\n");
