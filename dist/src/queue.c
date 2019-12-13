@@ -3,8 +3,8 @@
  *	compile: see search.c
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.12
- *	@date 2019-12-12
+ *	@version 2.0.1
+ *	@date 2019-12-13
  *****************************************************************************/
 
 /* Includes */
@@ -51,6 +51,98 @@ NodeL *queue_tail_l = NULL;
 long long queue_len_l = 0;
 
 /* functions */
+long long get_queue_size_l() {
+	return queue_len_l;
+}
+void enqueue_l(unsigned long long *arr, int count) {
+	NodeL *new_node = (NodeL*) malloc(sizeof(NodeL));
+	NodeL *x = queue_head_l;
+	int i, size = (int) (count / chars_per_long);
+	new_node->size = count;
+	new_node->next = NULL;
+	if (count % chars_per_long != 0) {
+		size++;	/* Extra long if needed */
+	}
+	if (new_node == NULL) {
+		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
+	}
+	new_node->item = malloc(sizeof(unsigned long long) * size);
+	if (new_node->item == NULL) {
+		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
+	}
+	for (i = 0; i < size; i++) { /* Copy longs */
+		new_node->item[i] = arr[i];
+	}
+	if (queue_head_l == NULL) { /* Empty queue */
+		queue_head_l = new_node;
+		queue_tail_l = new_node;
+	}
+	else if (queue_head_l->next == NULL) { /* Only one item currently in queue */
+		if (new_node->size < queue_head_l->size) {
+			queue_head_l->next = new_node;
+			queue_tail_l = new_node;
+		}
+		else {
+			new_node->next = queue_head_l;
+			queue_head_l = new_node;
+		}
+	}	/* Multiple items already in queue */
+	else {
+		if (new_node->size >= x->size) {
+			new_node->next = x;
+			queue_head_l = new_node;
+		} 
+		else {
+			while (new_node->size < x->next->size) {
+				if (x->next == NULL) { /* If at end */
+					x->next = new_node;
+					queue_tail_l = new_node;
+					goto end;
+				}
+				x = x->next;
+			}
+			new_node->next = x->next;
+			x->next = new_node;
+		}
+	}
+	end:
+	queue_len_l++;
+}
+/* 	User must ensure sufficient space allocated to arr beforehand.
+	Count is set to length */
+int dequeue_l(unsigned long long *arr, int* count) {
+	NodeL *old_head;
+	long long *ptr;
+	int i, size;
+	*count = queue_head_l->size; 
+
+	size = (int) (*count / chars_per_long);
+	if (*count % chars_per_long != 0) {
+		size++;	/* Extra long if needed */
+	}
+	if (queue_head_l == NULL) {
+		return FAILURE;
+	}
+
+	if (arr == NULL) {
+		fprintf(stderr,"UNABLE TO MALLOC SPACE\n");
+		return FAILURE;
+	}
+	for (i = 0; i < size; i++) { /* Copy longs */
+		arr[i] = queue_head_l->item[i];
+	}
+	old_head = queue_head_l;
+	queue_head_l = queue_head_l->next;
+	free(old_head->item);
+	free(old_head);
+	if (queue_head_l == NULL) {
+		queue_tail_l = NULL;
+	}
+	queue_len_l--;
+	return SUCCESS;
+}
+
+/*------------------------OLD STRING CODE-------------------------------------*/
 long long get_queue_size() {
 	return queue_len;
 }
@@ -116,111 +208,3 @@ int dequeue_s(char *w) {
 	queue_len--;
 	return SUCCESS;
 }
-
-/*---------------------------------------------------------------*/
-long long get_queue_size_l() {
-	return queue_len_l;
-}
-void enqueue_l(unsigned long long *arr, int count) {
-	NodeL *new_node = (NodeL*) malloc(sizeof(NodeL));
-	NodeL *x = queue_head_l;
-	int i, size = (int) (count / chars_per_long);
-	new_node->size = count;
-	new_node->next = NULL;
-	if (count % chars_per_long != 0) {
-		size++;	/* Extra long if needed */
-	}
-	if (new_node == NULL) {
-		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
-	}
-	new_node->item = malloc(sizeof(unsigned long long) * size);
-	if (new_node->item == NULL) {
-		fprintf(stderr,"ENQUEUE_L:UNABLE TO MALLOC SPACE\n");
-	}
-	//printf("enq: malloc complete. size: %d\n", size);
-	for (i = 0; i < size; i++) { /* Copy longs */
-		new_node->item[i] = arr[i];
-	}
-	if (queue_head_l == NULL) { /* Empty queue */
-		queue_head_l = new_node;
-		queue_tail_l = new_node;
-	}
-	else if (queue_head_l->next == NULL) { /* Only one item currently in queue */
-		if (new_node->size < queue_head_l->size) {
-			queue_head_l->next = new_node;
-			queue_tail_l = new_node;
-		}
-		else {
-			new_node->next = queue_head_l;
-			queue_head_l = new_node;
-		}
-	}	/* Multiple items already in queue */
-	else {
-		if (new_node->size >= x->size) {
-			new_node->next = x;
-			queue_head_l = new_node;
-		} 
-		else {
-			while (new_node->size < x->next->size) {
-				if (x->next == NULL) { /* If at end */
-					x->next = new_node;
-					queue_tail_l = new_node;
-					goto end;
-				}
-				x = x->next;
-			}
-			new_node->next = x->next;
-			x->next = new_node;
-		}
-	}
-	end:
-	//printf("enq finished\n");
-	queue_len_l++;
-}
-/* 	User must ensure sufficient space allocated to arr beforehand.
-	Count is set to length */
-int dequeue_l(unsigned long long *arr, int* count) {
-	NodeL *old_head;
-	long long *ptr;
-	int i, size;
-	*count = queue_head_l->size; 
-
-	size = (int) (*count / chars_per_long);
-	if (*count % chars_per_long != 0) {
-		size++;	/* Extra long if needed */
-	}
-	//printf("count: %d\n", *count);
-	if (queue_head_l == NULL) {
-		return FAILURE;
-	}
-
-	if (arr == NULL) {
-		fprintf(stderr,"UNABLE TO MALLOC SPACE\n");
-		return FAILURE;
-	}
-	for (i = 0; i < size; i++) { /* Copy longs */
-		//printf("i: %d\n",i);
-		arr[i] = queue_head_l->item[i];
-	}
-	//printf("2:\n");
-	old_head = queue_head_l;
-	queue_head_l = queue_head_l->next;
-	free(old_head->item);
-	free(old_head);
-	//printf("3:\n");
-	if (queue_head_l == NULL) {
-		queue_tail_l = NULL;
-	}
-	//printf("deq finished: %llu, %d\n", (*arr)[0], *count);
-	queue_len_l--;
-	return SUCCESS;
-}
-
-/* TODO
-void enqueue_lm(unsigned long *arr, int count, int my_id, int root_id) {
-	return;
-}
-
-int dequeue_lm(unsigned long *arr, int count, int my_id, int root_id) {
-	return 0;
-}*/

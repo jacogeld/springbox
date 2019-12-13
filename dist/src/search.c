@@ -18,7 +18,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.0
+ *	@version 2.0.1
  *	@date 2019-12-13
  *****************************************************************************/
 /* Includes */
@@ -559,7 +559,6 @@ int main(int argc, char *argv[])
 						printf("[1] == %llu\n", word_l_arr[1]);
 					}
 				}
-				w = longs_to_string(word_l_arr,count);
 				if (DEBUG) {
 					printf("beginning process. w: %s\n", w);
 					printf("word_l_arr[0]: %llu, count: %d\n", word_l_arr[0], count);
@@ -567,9 +566,8 @@ int main(int argc, char *argv[])
 					printf("&word_l: %p\t&w: %p\n",&word_l_arr, &w);
 				}
 				/* TEMP TODO DELME*/
-					w = realloc(w, max_word_size[alpha_size] + 1);
-				process(STANDARD_SEARCH_DEPTH, word_l_arr, count);		
-				free(w);
+				//printf("<%d> running\n", my_id);
+				process(STANDARD_SEARCH_DEPTH, word_l_arr, count);		;
 
 				/* Send local max length back */
 				ierr = MPI_Send(&max_length, 1, MPI_INT, ROOT_PROCESS,
@@ -613,7 +611,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	memset(LOT, -1, alpha_size * sizeof(int));
 	memset(BOT, 0, BOT_size/8);
 	string = longs_to_string(word_arr,len);
-
 	if (DEBUG) {
 		printf("<%d>New process: len == %d,", my_id, len);
 		printf("pattern == %s\n", string);
@@ -718,6 +715,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 					flip /= 2;
 				}
 				if (((*temp_ptr) &flip) != 0) {
+					printf("bad dequeue\n");
 					goto end_p; //HOTFIX
 					string = longs_to_string(arr,len);
 					printf("string: %s\n", string);
@@ -779,8 +777,8 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	}
 	/* TODO: remove this once queueing issue is gone */
 	/* DELME Temp assert */
-	assert(deep_check_l(word_arr, len) == deep_check(string,i));
-	if (deep_check_l(word_arr, len) == INVALID) return;
+	//assert(deep_check_l(word_arr, len) == deep_check(string,i));
+	//if (deep_check_l(word_arr, len) == INVALID) return;
 
 	if (DEBUG) printf("end of setup\n");
 
@@ -808,7 +806,10 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (DEBUG) {
 				printf("(%d)string too deep\n", my_id);
 			}
-			if (o_valid) {	/* Failsafe check */
+			/* TODO: Figure out why invalids are getting put here
+			(suspect it's due to a multiplication after a check to
+			'setup' next one, which it then queues without checking)*/
+			if (deep_check_l(arr,count-1)) {	/* Failsafe check */
 				if (my_id != ROOT_PROCESS) {
 					/* TODO: swap to count-1 */
 					MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
@@ -1377,7 +1378,7 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 					*temp_ptr ^= flip;
 				} else {
 					valid = INVALID;
-					printf("i: %d, j: %d, box: %llu\n",i, j, box);
+					//printf("i: %d, j: %d, box: %llu\n",i, j, box);
 					goto end;
 				}
 			}
