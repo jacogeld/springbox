@@ -18,8 +18,8 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 1.12
- *	@date 2019-12-12
+ *	@version 1.12.1
+ *	@date 2019-12-13
  *****************************************************************************/
 /* Includes */
 #include <stdio.h>
@@ -511,7 +511,6 @@ int main(int argc, char *argv[])
 				queue_size = get_queue_size_l();
 			}
 		}
-		printf("finished\n");
 		//free(max_word); /* Needed? TODO*/
 		max_word = longs_to_string(max_word_l,max_length);
 		/* qs == 0 => explored all || ml == ds => found a longest pattern */
@@ -640,7 +639,10 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	}
 
 	/* TODO: check that this fixes the i=32, w!= 0 at start bug*/
-	size = (int) (len / chars_per_long) + 1;
+	size = (int) (len / chars_per_long);
+	if (len % chars_per_long != 0) {
+		size++;
+	}
 
 		/* Instead of needing to reallocate space every time an extra
 	   long is needed, allocate space for the maximum length word.
@@ -813,7 +815,13 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 	i = k;
 	count = i+1;
 	counter = count;
+
 	word_v = old_word_v;
+	if (count % chars_per_long == 1 && count != 1) {
+		arr[count/chars_per_long] = word_v;
+		word_v = 0;
+	}
+
 	/* TODO: increase long count if needed */
 	word_v *= alpha_size;
 	if (DEBUG_V2) printf("word_v == %llu\n", word_v);
@@ -1112,7 +1120,7 @@ void process(char *word, int depth, unsigned long long *word_arr, int len) {
 			printf("\nWarning: o_valid == %d, valid == %d, 0_valid == valid: %d\n",
 				o_valid, valid, o_valid==valid);
 			printf("word_v: %llu, box: %llu\n", word_v, box);
-			printf("last added: %lld\n", word_v % alpha_size);
+			printf("last added: %lld, last occured: %d\n", word_v % alpha_size, lc);
 			printf("i: %d, count: %d, Word: ", i, count);
 			for (j = 0; j < i+1; j++) {
 				printf("%c", word[j]);
