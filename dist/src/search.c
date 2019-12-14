@@ -18,8 +18,8 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.0.1
- *	@date 2019-12-13
+ *	@version 2.1
+ *	@date 2019-12-14
  *****************************************************************************/
 /* Includes */
 #include <stdio.h>
@@ -42,6 +42,8 @@
 #define STATUS (1)						/* Prints status messages */
 #define PRINT_MAX (1)					/* Prints max whenever it is updated */
 
+/*(6,3),(8,3) seems to have very little memory usage
+  (10,3) starts increasing slowly */
 #define STANDARD_SEARCH_DEPTH (6)		/* Depth to search per job */
 #define INITIAL_SEARCH_DEPTH (3)		/* Depth for initial run by ROOT */
 #define STANDARD_ALPHABET_SIZE (3)		/* Default alphabet size */
@@ -115,6 +117,7 @@
 } while (0)
 
 #define CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,i, box, it) do { \
+	int x = 0; \
 	if (lc != 0 && lc % (chars_per_long) == 0) lc = chars_per_long; \
 	else lc %= chars_per_long; \
 	/* calculate box from end of long to current position */ \
@@ -122,8 +125,14 @@
 	box = temp / exponent; /* remove right of box */ \
 	/* calculate box segment in previous long */ \
 	temp = word_arr[it-1]; \
-	exponent_3 = pow(alpha_size, i+1); \
-	exponent_2 = pow(alpha_size, chars_per_long - lc + 1); \
+	exponent_2 = 1; \
+	exponent_3 = 1; \
+	for (x = 0; x < i+1; x++) { \
+		exponent_3 *= alpha_size; /*pow(alpha_size, i+1)*/ \
+	} \
+	for (x = 0; x < (chars_per_long - lc + 1); x++) { \
+		exponent_2 *= alpha_size; /*pow(alpha_size, chars_per_long - lc + 1)*/ \
+	} \
 	if (DEBUG_V2) printf("exponent: %llu\texponent_2: %llu\n", exponent, exponent_2); \
 	if (DEBUG_V2) printf("temp: %llu\n", temp); \
 	if (exponent_2 == 0) { /* Temp. Del this if */ \
@@ -144,7 +153,7 @@
 		printf("word_v: %llu, temp: %llu\n", word_arr[i], temp); \
 	} \
 	/*<DELME>*/ \
-	assert(box <= BOT_size && 1); \
+	assert(box <= BOT_size); \
 	if (DEBUG_V2) printf("end of spillover method\n"); \
 } while(0)
 
@@ -173,16 +182,16 @@
 	/* TODO: Update to search previous longs too */ \
 	if (LOT[j] == -1) { \
 		if (DEBUG_V2) printf("searching previous longs for %d. ii: %d\n",j, (count / chars_per_long) - 1); \
-		for (ii = (count / chars_per_long) -1; ii >= 0; ii--) { \
-			if (DEBUG_V2) printf("word_arr[%d] == %llu\n", ii, word_arr[ii]); \
-			temp = word_arr[ii]; \
+		for (x = (count / chars_per_long) -1; x >= 0; x--) { \
+			if (DEBUG_V2) printf("word_arr[%d] == %llu\n", x, word_arr[x]); \
+			temp = word_arr[x]; \
 			c = chars_per_long; /* TODO: -1? */ \
 			while (c > 0) { \
 				d = temp % alpha_size; \
 				if (DEBUG_V2) printf("c: %d d: %d, d==j: %d, temp: %llu\n",c, d, d==j,temp); \
 				if (d == j) { \
 					if (DEBUG_V2) printf("d==j\n"); \
-					LOT[j] = c + (ii * chars_per_long); \
+					LOT[j] = c + (x * chars_per_long); \
 					goto label_name; \
 				} \
 				temp /= alpha_size; \
@@ -452,6 +461,7 @@ int main(int argc, char *argv[])
 						printf("(n)Dequeued [0]: %llu with length %d\n", word_l_arr[0], send_count);
 						printf("queuesize: %lld\n", get_queue_size_l());
 					}
+				//printf("count: %d, queue_size: %llu. Dequeued: %llu %llu %llu %llu\n",send_count, queue_size,word_l_arr[0],word_l_arr[1],word_l_arr[2],word_l_arr[3]);
 					ierr = MPI_Send(&send_count, 1, MPI_INT, an_id,
 						NEW_WORK_TAG, MPI_COMM_WORLD);
 					UPDATE_COUNT(count, send_count);
@@ -469,12 +479,14 @@ int main(int argc, char *argv[])
 				if (count % chars_per_long != 0) {
 					rec_count++;
 				}
-				assert(rec_count <= max_longs_needed);
+				assert(rec_count <= max_longs_needed && rec_count > 0);
 				MPI_Recv(word_l_arr, rec_count, MPI_LONG_LONG, an_id, QUEUE_TAG,
 					MPI_COMM_WORLD, &status);
 				if (DEBUG) printf("<%d> asked to enqueue. word_l_arr[0]: %llu, size: %d, reccount: %d\n",
 					my_id, word_l_arr[0], count, rec_count);
 				enqueue_l(word_l_arr, count);
+				//printf("count: %d, queue_size: %llu. Enqueued: %llu %llu %llu %llu\n", rec_count, queue_size,word_l_arr[0],word_l_arr[1],word_l_arr[2],word_l_arr[3]);
+
 			}
 			queue_size = get_queue_size_l();
 			/* Send to stalled processes due to empty queue. Ideally never
@@ -599,7 +611,7 @@ int main(int argc, char *argv[])
 i.e. '0':  i=0, j=k=1 */
 void process(int depth, unsigned long long *word_arr, int len) {
 	int k = len, size, count, long_count;
-	int i = 0, j = 0, letter = 0, lc, c,d, counter, it, ii, flip;
+	int x, i = 0, j = 0, letter = 0, lc, c,d, counter, it, flip;
 	int valid = 1, next, o_valid, have_gone_back = 0; /*HGB: see BOT reverse */
 	char *temp_ptr, *string, next_char = '/';
 	unsigned long *new_ST;
@@ -616,7 +628,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 		printf("pattern == %s\n", string);
 		printf("Starting setup\n");
 	}
-
+	//printf("<%d> is processing %llu\n",my_id, word_arr[0]);
 	size = (int) (len / chars_per_long);
 	if (len % chars_per_long != 0) {
 		size++;
@@ -629,21 +641,26 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	arr = word_arr;
 
 	if (DEBUG_V2) {
-		for (ii = 0; ii < size; ii++) {
-			printf("arr[%d]: %llu\n", ii, arr[ii]);
+		for (x = 0; x < size; x++) {
+			printf("arr[%d]: %llu\n", x, arr[x]);
 		}
 	}
 	/* Reconstruct ST, LOT, BOT */
 	for (it = 0; it < size; it++) {
 		if (DEBUG_V2) printf("it: %d, size: %d\n", it, size);
 		word_v = arr[it];
+		exponent = 1;
 		if (it < size - 1) { /* Non-last -> full long */
 			count = chars_per_long;
-			exponent = pow(alpha_size, chars_per_long-1);
+			for (x = 0; (x < chars_per_long-1); x++) {
+				exponent *= alpha_size; /*pow(alpha_size, chars_per_long-1)*/
+			}
 		}
 		else {	/* last long, could be < chars_per_long */
 			count = len - (it * chars_per_long);
-			exponent = pow(alpha_size, count-1);
+			for (x = 0; x < count-1; x++) {
+				exponent *= alpha_size; /*pow(alpha_size, count-1)*/
+			}
 		}
 		old_word_v = word_v;
 		exp_temp = exponent;
@@ -741,7 +758,10 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	}
 	it--;	/* pointing to last long in array */
 	/* Update suffix table (ST) */
-	exponent = pow(alpha_size, alpha_size);
+	exponent = 1;
+	for (x = 0; x < alpha_size; x++) {
+		exponent *= alpha_size; /*pow(alpha_size, alpha_size)*/
+	}
 	exponent_2 = exponent;
 	if (it == 0 || count > alpha_size) { /* first long or no underflow risk */
 		if (DEBUG_V2) printf("exp: %llu\tword_v: %llu\n", exponent, word_v);
@@ -753,7 +773,10 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			exponent /= alpha_size;
 		}
 	} else {	/* Subsequent longs with underflow risk */
-		exponent = pow(alpha_size, count);
+		exponent = 1;
+		for (x = 0; x < count; x++) {
+			exponent *= alpha_size; /*pow(alpha_size, count)*/
+		}
 		if (DEBUG_V2 || BUGFIX_2) printf("exponent: %llu\n", exponent);
 		for (i = count-1; i >= 0; i--) { /* Current long */
 			word_v %= exponent;
@@ -762,7 +785,10 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (DEBUG_V2 || BUGFIX_2) printf("added suffix %llu at index %d\n", word_v, i);
 		}
 		word_v = word_arr[it-1];
-		exponent = pow(alpha_size, count);
+		exponent = 1;
+		for (x = 0; x < count; x++) {
+			exponent *= alpha_size; /*pow(alpha_size, count)*/
+		}
 		exponent_2 = alpha_size;
 		for (i = count; i <= alpha_size; i++) { /* Previous long */
 			ST[i] = ST[count-1] + (word_v % exponent_2) * exponent;
@@ -821,6 +847,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 					assert(j <= max_longs_needed);
 					MPI_Send(word_arr, j, MPI_LONG_LONG, ROOT_PROCESS, QUEUE_TAG,
 						MPI_COMM_WORLD);
+					//printf("<%d>count: %d. Enqueued: %llu %llu %llu %llu\n", my_id,j ,word_l_arr[0],word_l_arr[1],word_l_arr[2], word_l_arr[4]);
 				} else {
 					if (DEBUG) {
 						free(string);
@@ -891,8 +918,10 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				new_ST[j] = ST[j+1] / alpha_size;
 				if (DEBUG_V2) printf("new_st: [%d] - %ld\n", j, new_ST[j]);
 			}
-
-			exp_temp = pow(alpha_size, alpha_size+1);
+			exp_temp = 1;
+			for (x = 0; x <= alpha_size; x++) {
+				exp_temp *= alpha_size; /*pow(alpha_size, alpha_size+1)*/
+			}
 			word_v /= alpha_size;
 
 			if (DEBUG_V2) printf("word_v / alpha_size. now %llu\n", word_v);
@@ -908,9 +937,17 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				/* TODO: Check if below accesses correct entry */
 				temp = word_arr[(i+1) / chars_per_long - 1];
 				j = alpha_size+1 - j;
-				exp_temp = pow(alpha_size, j);
+				exp_temp = 1;
+				for (x = 0; x < j; x++) {
+					exp_temp *= alpha_size; /*pow(alpha_size, j)*/
+				}
 				d = ((temp % exp_temp) / (exp_temp/alpha_size));
-				new_ST[alpha_size] = new_ST[alpha_size-1] + d * pow(alpha_size, alpha_size);
+				exponent_3 = 1;
+				for (x = 0; x < alpha_size; x++) {
+					exponent_3 *= alpha_size; /*pow(alpha_size, alpha_size)*/
+				}
+				new_ST[alpha_size] = new_ST[alpha_size-1] + d * exponent_3;
+
 				if (DEBUG_V2) printf("letter: %d\n", d);
 				if (DEBUG_V2) printf("temp = %llu, j = %d, exp_temp = %llu, new_st[al] = %ld\n", temp, j , exp_temp, new_ST[alpha_size]);
  			}
@@ -1145,11 +1182,11 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				max_length = i;
 				free(max_word);
 				max_word = longs_to_string(max_word_l, max_length);
-				ii = max_length / chars_per_long;
+				x = max_length / chars_per_long;
 				if (max_length % chars_per_long > 0) {
-					ii++;
+					x++;
 				}
-				for (j = 0; j < ii; j++) {
+				for (j = 0; j < x; j++) {
 					max_word_l[j] = word_arr[j];
 				}
 			}
@@ -1292,12 +1329,13 @@ int deep_check(char* str, int len) {
 int deep_check_l(unsigned long long *word_arr, int len) {
 	unsigned long long word_v, old_word_v, exponent, exp_temp, box, temp, exponent_2, exponent_3;
 	int size = (int) (len / chars_per_long); /* # longs */
-	int flip, i, j, k, c, valid = VALID, count, letter, lc, temp_int;
+	int flip, i, j, k, c, x, valid = VALID, count, letter, lc, temp_int;
 	char *temp_ptr;
 	void *BOT2 = malloc(BOT_size);
 	int *LOT2 = malloc(sizeof(int) * alpha_size);
 	memset(BOT2, 0, BOT_size/8);
 	memset(LOT2, 0, alpha_size * sizeof(int));
+	//printf("\n");
 
 	if (len % chars_per_long != 0) {
 		size++;	/* Extra long if needed */
@@ -1306,11 +1344,17 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 		word_v = word_arr[i];
 		if (i < size - 1) { /* Non-last -> full long */
 			count = chars_per_long;
-			exponent = pow(alpha_size, chars_per_long-1);
+			exponent = 1;
+			for (x = 0; x < (chars_per_long-1); x++) {
+				exponent *= alpha_size; /*alpha_size ^chars_per_long-1*/
+			}
 		}
 		else {	/* last long, could be < chars_per_long */
 			count = len - (i * chars_per_long);
-			exponent = pow(alpha_size, count-1);
+			exponent = 1;
+			for (x = 0; x < (count-1); x++) {
+				exponent *= alpha_size; /*alpha_size ^count-1*/
+			}
 		}
 		old_word_v = word_v;
 		exp_temp = exponent;
@@ -1322,6 +1366,14 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 			} 
 			else {
 				letter = (word_v / exponent);
+			}
+			//printf("i: %d, j: %d, exponent: %llu\n", i,j, exponent);
+			if (letter >= alpha_size) {
+				printf("\nletter: %d, i: %d, j: %d, size: %d\n", letter,i,j, size);
+				printf("count: %d, word_v: %llu, exponent: %llu\n", count, word_v, exponent);
+				char *string = longs_to_string(word_arr, len);
+				printf("word: %s\n", string);
+				free(string);
 			}
 			assert(letter < alpha_size);
 			/* Compare to LOT */
@@ -1360,6 +1412,7 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 					/* TODO: Test */
 					/* handle boxes that spills over to previous long */
 					CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,j, box,i);
+					assert(box <= BOT_size);
 				}
 				/* Check if BOT entry != 0. If so, return 0. else update BOT */
 					/* Move (box/8) bytes and change (box%8) bit */
@@ -1443,7 +1496,7 @@ char *longs_to_string(unsigned long long *arr, int len) {
  *	@return			array of longs storing the pattern
 */
 unsigned long long *string_to_longs(char *string, int len) {
-	int i, j, count, size = (int) (len / chars_per_long);
+	int i, j, count, size = (int) (len / chars_per_long), x;
 	unsigned long long word_v, exponent, *arr;
 
 	if (len % chars_per_long != 0) {
@@ -1456,14 +1509,19 @@ unsigned long long *string_to_longs(char *string, int len) {
 
 	for (i = 0; i < size; i++) { /* For each long */
 		word_v = 0;
+		exponent = 1;
 		if (i < size - 1) { /* Non-last -> full long */
 			count = chars_per_long;
-			exponent = pow(alpha_size, chars_per_long -1);
+			for (x = 0; x < (chars_per_long-1); x++) {
+				exponent *= alpha_size; /*pow(alpha_size, chars_per_long -1)*/
+			}
 			/* TODO: Check */
 		}
 		else {	/* last long, could be < chars_per_long */
 			count = len - (i * chars_per_long);
-			exponent = pow(alpha_size, count - 1);
+			for (x = 0; x < count-1; x++) {
+				exponent *= alpha_size; /*pow(alpha_size, count -1)*/
+			}
 			/* TODO: Check */
 		}
 		for (j = 0; j < count; j++) { /* Get chars from long */
