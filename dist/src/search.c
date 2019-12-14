@@ -6,9 +6,10 @@
  *  original process and box_ok code provided by Jaco Geldenhuys
  * 
  *	compile:	mpicc -o ../bin/search.o queue.c search.c -lm
- *	run:		mpirun -np X ./search.o	N
+ *	run:		mpirun -np X ./search.o	N <filename>
  		where X is number processes,
 	 	N alphabet size between 2 and 9 (default if not specified)
+		OPTIONAL: <filename> is the name of the queue file to restore from
 
  * WARNING: Since one process is used for controlling the rest, do not specify
  * more than the available number of cores. Else the program can lock (admin
@@ -18,7 +19,7 @@
  * piping output to file.
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.1
+ *	@version 2.2
  *	@date 2019-12-14
  *****************************************************************************/
 /* Includes */
@@ -29,22 +30,26 @@
 #include <mpi.h>
 #include <math.h>
 #include <limits.h>
+#include <time.h>
 #include "queue.h"
 #include "search.h"
 
 /************************** Definitions and macros **************************/
 /* Configurations */
-#define BUGFIX (0)			/* DELME */
-#define BUGFIX_2 (0)		/* DELME */
 #define KILL_AT_ERROR (1)	/* Exit application if major error occurs */
 #define DEBUG (0)						/* Enables debug output */
 #define DEBUG_V2 (0)					/* ^ for bitwise method */
 #define STATUS (1)						/* Prints status messages */
 #define PRINT_MAX (1)					/* Prints max whenever it is updated */
 
+#define STORE_QUEUE (1)
+#define QUEUE_TIME (120)	/* stores queue as txt file every X minutes */
+#define COPIES_KEPT	(12)		/* Number of different save files for queue*/
+
 /*(6,3),(8,3) seems to have very little memory usage
-  (10,3) starts increasing slowly */
-#define STANDARD_SEARCH_DEPTH (6)		/* Depth to search per job */
+  (10,3) starts increasing slowly
+  (11,3) takes forever to find first max strings. Broad search? */
+#define STANDARD_SEARCH_DEPTH (9)		/* Depth to search per job */
 #define INITIAL_SEARCH_DEPTH (3)		/* Depth for initial run by ROOT */
 #define STANDARD_ALPHABET_SIZE (3)		/* Default alphabet size */
 
@@ -65,9 +70,6 @@
 
 /* Macros to avoid function calls. Slight speed boost */
 /* Revert BOT entry, if any */
-/* Bug: If search_depth & initial line up with char_length, then will
-	rarely not track a box. Likely a bug in initial setup and box over
-	a rollover. Occurs especially in N=5. See */
 /* D keeps track of when to switch to previous long's values. */
 #define REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr,temp, box, word_arr) do { \
 	unsigned long long preamble = 0; \
@@ -94,7 +96,7 @@
 		assert (exp_temp > 0); \
 		box = (temp % (exp_temp*alpha_size)) * exponent_2 + preamble; /* box value TODO CHECK*/	\
 		if (((temp % (exp_temp*alpha_size)) /exp_temp) == letter) {	\
-			if (DEBUG_V2 || BUGFIX) printf("BOT_revert: box value: %llu at j: %d\n", box, j);	\
+			if (DEBUG_V2) printf("BOT_revert: box value: %llu at j: %d\n", box, j);	\
 			if (DEBUG_V2) printf("exp_temp: %llu, temp: %llu, exponent_2: %llu, preamble: %llu\n", exp_temp, temp, exponent_2, preamble); \
 			BOT += box / 8;	\
 			temp_ptr = (char*) BOT;	\
@@ -217,7 +219,9 @@
 int alpha_size = STANDARD_ALPHABET_SIZE;
 char alpha[] = {'0','1','2','3','4','5', '6', '7', '8', '9'};
 char last;	/* Last char to process in alphabet. Set in main */
-
+char file_name[] = "../storage/_.save"; /*_ replaced by function */
+int swap_index = 11;	/* Index of _ above */
+int current_save_number = 0;	/* For naming save files */
 /* Theoretical longest word per alphabet size. l(n) = n(l(n-1) +2) */
 int max_word_size[] = {0, 2, 8, 30, 128, 650, 3912, 27398, 219200, 1972818};
 /* Properties of max word found */
@@ -238,13 +242,16 @@ void *BOT; /* Box_occurance_table. Bit table of if box has occured. Table 3 */
 unsigned long long BOT_size;	/* Number of bits in BOT */
 
 /*********************** function prototypes *******************************/
-
+/* Long variants - O(1) search */
 void process (int depth, unsigned long long *word_arr, int len);
 int deep_check_l(unsigned long long *word_arr, int len);		
 char *longs_to_string(unsigned long long *arr, int len);
 unsigned long long *string_to_longs(char *string, int len);
 
-/* Old code */
+void store_queue_to_file(char *save_name);
+void restore_queue_from_file(char *save_name);
+
+/* String variants */
 int box_valid(char *word, int len);			
 int deep_check(char *string, int len);	
 
@@ -278,6 +285,8 @@ int main(int argc, char *argv[])
 	/* Keeps track of how many processes have been successfully stopped */
 	int active_processes, waiting_count = 0;
 	int *waiting_for_work;	/* For when queue is empty and continuing */
+	clock_t start_time, current_time; /* For saving */
+	double elapsed_time;
 
 	/* MPI setup */
 	ierr = MPI_Init(&argc, &argv);
@@ -285,7 +294,7 @@ int main(int argc, char *argv[])
 	ierr = MPI_Comm_size(MPI_COMM_WORLD, &nbr_procs);
 
 	/* Command line arguement details */
-	if (argc == 2) {
+	if (argc == 2 || argc == 3) {
 		alpha_size = atoi(argv[1]);
 		if (alpha_size < 2 || alpha_size > 9) {
 			if (my_id == ROOT_PROCESS) {	/* prevents excess messages */
@@ -355,25 +364,35 @@ int main(int argc, char *argv[])
 
 	/* Root/Master */
 	if (my_id == ROOT_PROCESS) {
+		start_time = clock();
 		if (STATUS) {
 			printf("BOT_size: %llu\n", BOT_size);
 			printf("char per long: %i\n", chars_per_long);
 			printf("Longs needed for max: %d\n", max_longs_needed);
 		}
-		/* Initial run to create branches for workers */
-		/* Initial start is 1 of each alphabet character */
-		for (i = 0; i < alpha_size; i++) {
-			w[i] = alpha[i];
+		if (argc == 3) { /* Restore from file*/
+			restore_queue_from_file(argv[2]);
+			if (get_queue_size_l() == 0) {
+				printf("Nothing was able to be restored from file\n");
+				return EXIT_FAILURE;
+			}
 		}
-		w[i] = '\0';
+		else { 
+			/* Initial run to create branches for workers */
+			/* Initial start is 1 of each alphabet character */
+			for (i = 0; i < alpha_size; i++) {
+				w[i] = alpha[i];
+			}
+			w[i] = '\0';
+			/* TODO: remove w[]*/
+			word_l_arr = string_to_longs(w, alpha_size);
+			/* TEMP TODO DELME*/
+			w = realloc(w, max_word_size[alpha_size] + 1);
+			
+			process(INITIAL_SEARCH_DEPTH, word_l_arr, alpha_size);
 
-		word_l_arr = string_to_longs(w, alpha_size);
-		/* TEMP TODO DELME*/
-		w = realloc(w, max_word_size[alpha_size] + 1);
-		
-		process(INITIAL_SEARCH_DEPTH, word_l_arr, alpha_size);
-
-		free(word_l_arr);
+			free(word_l_arr);
+		}
 		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
 		MPI_Barrier(MPI_COMM_WORLD);
 
@@ -402,6 +421,17 @@ int main(int argc, char *argv[])
 		 * workload signal followed by workload */
 		queue_size = get_queue_size_l();
 		while (1) {
+			if (STORE_QUEUE) {
+				current_time = clock();
+				elapsed_time = ((double) (current_time - start_time)) / CLOCKS_PER_SEC / 60;
+				if (elapsed_time > QUEUE_TIME) {
+					/* 	TODO: figure out how to get items not in queue,
+						but being processed still and about to be enqueued */
+					store_queue_to_file(file_name);
+					restore_queue_from_file(file_name);
+					start_time = clock();
+				}
+			}
 			if (queue_size <= 0 || max_length >= desired_size) {
 				stop = 1;
 			}
@@ -577,9 +607,8 @@ int main(int argc, char *argv[])
 					printf("word_l_arr[1]: %llu\n", word_l_arr[1]);
 					printf("&word_l: %p\t&w: %p\n",&word_l_arr, &w);
 				}
-				/* TEMP TODO DELME*/
-				//printf("<%d> running\n", my_id);
 				process(STANDARD_SEARCH_DEPTH, word_l_arr, count);		;
+				//printf("<%d> finished processing, sending max back\n", my_id);
 
 				/* Send local max length back */
 				ierr = MPI_Send(&max_length, 1, MPI_INT, ROOT_PROCESS,
@@ -628,7 +657,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 		printf("pattern == %s\n", string);
 		printf("Starting setup\n");
 	}
-	//printf("<%d> is processing %llu\n",my_id, word_arr[0]);
+	//printf("<%d> is processing %llu %llu %llu %llu\n",my_id, word_arr[0],word_arr[1],word_arr[2],word_arr[3]);
 	size = (int) (len / chars_per_long);
 	if (len % chars_per_long != 0) {
 		size++;
@@ -777,12 +806,12 @@ void process(int depth, unsigned long long *word_arr, int len) {
 		for (x = 0; x < count; x++) {
 			exponent *= alpha_size; /*pow(alpha_size, count)*/
 		}
-		if (DEBUG_V2 || BUGFIX_2) printf("exponent: %llu\n", exponent);
+		if (DEBUG_V2) printf("exponent: %llu\n", exponent);
 		for (i = count-1; i >= 0; i--) { /* Current long */
 			word_v %= exponent;
 			exponent /= alpha_size;
 			ST[i] = word_v;
-			if (DEBUG_V2 || BUGFIX_2) printf("added suffix %llu at index %d\n", word_v, i);
+			if (DEBUG_V2) printf("added suffix %llu at index %d\n", word_v, i);
 		}
 		word_v = word_arr[it-1];
 		exponent = 1;
@@ -801,11 +830,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			printf("arr[%d] == %llu\n", j, word_arr[j]);
 		}
 	}
-	/* TODO: remove this once queueing issue is gone */
-	/* DELME Temp assert */
-	//assert(deep_check_l(word_arr, len) == deep_check(string,i));
-	//if (deep_check_l(word_arr, len) == INVALID) return;
-
 	if (DEBUG) printf("end of setup\n");
 
 	/* Iterations */
@@ -1110,36 +1134,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (DEBUG_V2) printf("LOT[%d]: %d -> %d\n", next, LOT[next], i+1);
 			LOT[next] = i+1;
 		}
-		/*	------------------	*/
-		/* Can't do string conversion here: word_l_arr not up to date */
-		/*valid = box_valid(string,i);
-		if (DEBUG_V2) {
-			printf("word_v == %llu\n", word_v);
-			printf("o_valid == %d, valid == %d, 0_valid == valid: %d\n",
-				o_valid, valid, o_valid==valid);
-		}
-		if (STATUS && o_valid != valid) {
-			//If broken, print out nearby situation
-			printf("\nWarning: o_valid == %d, valid == %d, 0_valid == valid: %d\n",
-				o_valid, valid, o_valid==valid);
-			printf("word_v: %llu, box: %llu\n", word_v, box);
-			printf("last added: %lld, last occured: %d\n", word_v % alpha_size, lc);
-			printf("i: %d, count: %d, Word: ", i, count);
-			string = longs_to_string(word_l_arr, count);
-			for (j = 0; j < i+1; j++) {
-				printf("%c", string[j]);
-			}
-			printf("\nLOT:\n");
-			for (j = 0; j < alpha_size; j++){
-				printf("LOT[%d]: %d\n", j, LOT[j]);
-			}
-			printf("ST:\n");
-			for (j = 0; j <= alpha_size; j++) {
-				printf("ST[%d]: %lu\n", j, ST[j]);
-			}
-			exit(0);
-			if (KILL_AT_ERROR) return;
-		}*/
 		if (o_valid) {
 			if (DEBUG) {
 				printf("no repeat box\n");
@@ -1261,7 +1255,6 @@ int box_valid(char* pattern, int len) {
 						goto end_iteration;
 					}
 				}
-				printf("b1_start: %d, b1_end: %d, b2_start: %d, b2_end: %d\n",b1_start, b1_end, b2_start,b2_end);
 				return INVALID;
 				
 			}
@@ -1307,7 +1300,6 @@ int deep_check(char* str, int len) {
 		valid = box_valid(w, i);
 		if (valid == 0){
 			free(w);
-			printf("invalid: i: %d, character: %c\n",i,w[i]);
 			return INVALID;
 		}
 	}
@@ -1447,6 +1439,10 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 	end:
 	free(BOT2);
 	free(LOT2);
+	/* Temporary assert to confirm all is working */
+	temp_ptr = longs_to_string(word_arr, len);
+	assert(valid == deep_check(temp_ptr, len));
+	free(temp_ptr);
 	return valid;
 }
 
@@ -1502,8 +1498,12 @@ unsigned long long *string_to_longs(char *string, int len) {
 	if (len % chars_per_long != 0) {
 		size++;
 	}
-	arr = malloc(sizeof(unsigned long long) * size);
-	for (i = 0; i < size; i++) {
+	//arr = malloc(sizeof(unsigned long long) * size);
+	//for (i = 0; i < size; i++) {
+	//	arr[i] = 0;
+	//} /* Temp: make as big as possibly needed */
+	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
+	for (i = 0; i < max_longs_needed; i++) {
 		arr[i] = 0;
 	}
 
@@ -1531,4 +1531,135 @@ unsigned long long *string_to_longs(char *string, int len) {
 	arr[i] = word_v;
 	}
 	return arr;
+}
+
+/* TODO: Comment/Doc*/
+/* File layout: alphabet size, followed by entries stored as:
+	max_len	max[0]	max[1]	max[2]	max[3]	...
+	len(l1)	l1[0]	l1[1]	l1[2]	l1[3] etc */
+/* Overwrites filename */
+/* TODO: Move to queue and use transversal to get data without dequeueing */
+
+void store_queue_to_file(char *save_name) {
+	FILE *file;
+	unsigned long long queue_size, *arr;
+	int size, i;
+	if (my_id != ROOT_PROCESS) {
+		fprintf(stderr, "Only root process can process queue\n");
+		return;
+	}
+	else if (save_name == NULL) {
+		fprintf(stderr, "NULL file name\n");
+		return;
+	}
+	if (strcmp(save_name, file_name) == 0) {
+		/* Custom renaming of saves */
+		if (current_save_number >= COPIES_KEPT) {
+			current_save_number = 0;
+		}
+		save_name[swap_index] = '0' + current_save_number;
+		current_save_number++;
+	}
+	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
+	file = fopen(save_name,"w");
+	if (!file) {
+		printf("Unable to create file. ");
+		printf("Please create directory 'storage' in root of this repo\n");
+		/* TODO: make instruction at top? */
+		return;
+	}
+	queue_size = get_queue_size_l();
+	fprintf(file, "%d\n", alpha_size);
+	if (STATUS) {
+		printf("Storing queue: file: '%s'. Queue at start: %llu\n", save_name, queue_size);
+	}
+	/* Store current max */
+	fprintf(file, "%d", max_length);
+	for (i = 0; i < max_longs_needed; i++) {
+		fprintf(file, " %llu", max_word_l[i]);
+	}
+	fprintf(file, "\n");
+	/* Store the queue */
+	while (queue_size) {
+		for (i = 0; i < max_longs_needed; i++) {
+			arr[i] = 0;
+		}
+		if (!dequeue_l(arr, &size)) {
+			printf("error dequeueing\n");
+			goto close_s;
+			return;
+		}
+		fprintf(file,"%d", size);
+		for (i = 0; i < max_longs_needed; i++) {
+			fprintf(file, " %llu", arr[i]);
+		}
+		fprintf(file, "\n");
+		queue_size = get_queue_size_l();
+	}
+	if (STATUS) {
+		printf("Storing queue: Queue at end: %llu\n", queue_size);
+	}
+	close_s:
+	fclose(file);
+	return;
+}
+
+void restore_queue_from_file(char *save_name) {
+	/*TODO DOC*/
+	FILE *file;
+	int i, rec;
+	unsigned long long value, *arr;
+	if (my_id != ROOT_PROCESS) {
+		fprintf(stderr, "Only root process can process queue\n");
+		return;
+	}
+	else if (save_name == NULL) {
+		fprintf(stderr, "NULL file name\n");
+		return;
+	}
+
+	file = fopen(save_name,"r");
+
+	if (file == NULL) {
+		fprintf(stderr, "Unable to open file %s\n", save_name);
+		return;
+	}
+
+	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
+	fscanf(file, "%d", &rec);
+	/* Only read from a file with same alpha_size */
+	if (rec != alpha_size) {
+		printf("invalid file to read from.\n");
+		printf("alpha_size: %d, file_alpha_size: %d\n", alpha_size, rec);
+		goto close_r;
+	}
+	//if (STATUS) {
+	//	printf("Restoring queue: Queue at start: %llu\n", get_queue_size_l());
+	//}
+	/* Get entries: size followed by longs of array */
+	printf("Restoring queue: file: '%s'\n", save_name);
+	while (fscanf(file, "%d", &rec) > 0) {
+		/* get longs */
+		for (i = 0; i < max_longs_needed; i++) {
+			if (fscanf(file, "%llu", &value) <= 0) {
+				/* If a long is missing */
+				printf("unable to retrieve queue entry. ");
+				printf("Insufficient long entries. i: %d\n", i);
+				goto close_r;
+			}
+			arr[i] =  value;
+		}
+		enqueue_l(arr, rec);
+		for (i = 0; i < max_longs_needed; i++) {
+			arr[i] = 0;
+		}
+	}
+
+	if (STATUS) {
+		printf("Restoring queue: Queue at end: %llu\n", get_queue_size_l());
+	}
+	close_r:
+	fclose(file);
+	return;
+
 }

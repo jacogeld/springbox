@@ -73,6 +73,7 @@ void enqueue_l(unsigned long long *arr, int count) {
 	for (i = 0; i < size; i++) { /* Copy longs */
 		new_node->item[i] = arr[i];
 	}
+	
 	if (queue_head_l == NULL) { /* Empty queue */
 		queue_head_l = new_node;
 		queue_tail_l = new_node;
@@ -94,12 +95,12 @@ void enqueue_l(unsigned long long *arr, int count) {
 		} 
 		else {
 			while (new_node->size < x->next->size) {
+				x = x->next;
 				if (x->next == NULL) { /* If at end */
 					x->next = new_node;
 					queue_tail_l = new_node;
 					goto end;
 				}
-				x = x->next;
 			}
 			new_node->next = x->next;
 			x->next = new_node;
