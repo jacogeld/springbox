@@ -2,8 +2,8 @@
  *	Finds the longest string that has no repeated boxes. Utilises MPI to run
  *	multiple workers at once. Relies on a queue-based system to handle jobs
  *	between workers.
- *
- *  original process and box_ok code provided by Jaco Geldenhuys
+ * 
+ *  Setup: Create a 'bin' and 'saves' directory in root of repo
  * 
  *	compile:	mpicc -o ../bin/search.o queue.c search.c -lm
  *	run:		mpirun -np X ./search.o	N <filename>
@@ -18,9 +18,11 @@
  * If attempting to use debugging flags, strongly recommend
  * piping output to file.
  * 
+ * 	Original scaffolding of process provided by Jaco Geldenhuys
+ * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.2
- *	@date 2019-12-14
+ *	@version 2.3
+ *	@date 2019-12-16
  *****************************************************************************/
 /* Includes */
 #include <stdio.h>
@@ -35,26 +37,65 @@
 #include "search.h"
 
 /************************** Definitions and macros **************************/
-/* Configurations */
-#define KILL_AT_ERROR (1)	/* Exit application if major error occurs */
-#define DEBUG (0)						/* Enables debug output */
-#define DEBUG_V2 (0)					/* ^ for bitwise method */
-#define STATUS (1)						/* Prints status messages */
-#define PRINT_MAX (1)					/* Prints max whenever it is updated */
+/*--- CONFIGURATIONS  ---*/
+/* Enables debug output. Primarily related to overhead/MPI calls */
+#define DEBUG (0)
 
+/* Enables debug output. Primarily for version 2 (O(1) search) in process */
+#define DEBUG_V2 (0)
+
+/* Enables extra failsafes to ensure answer is definitely valid.
+	These slow down processing speed, so once it has been tested a few times,
+	these should be disabled. */
+#define FAILSAFE_ENABLED (1)
+
+/* Prints status messages (alphabet size being used, etc) */
+#define STATUS (1)
+
+/* Prints maximum whenever it is updated / a new max is found */
+#define PRINT_MAX (1)
+
+/* -- SAVE FILE -- */
+/* Toggles whether queue is saved to files */
 #define STORE_QUEUE (1)
-#define QUEUE_TIME (120)	/* stores queue as txt file every X minutes */
-#define COPIES_KEPT	(12)		/* Number of different save files for queue*/
 
-/*(6,3),(8,3) seems to have very little memory usage
-  (10,3) starts increasing slowly
+/* How often to store the queue. Stores queue every X minutes */
+/* Note: saving/loading can take a minute or two in the worst case,
+ so generally don't have this time too rapid. 2 hours works well (120) */
+#define QUEUE_TIME (120)
+
+/* Number of different save files for queue*/
+#define COPIES_KEPT	(9)
+
+/* Prints whenever the queue is saved to or reverted from a file */
+#define PRINT_SAVE_LOAD (1)
+
+/* Whether or not to store the maximum found so far in the save file too */
+#define STORE_MAX (1)
+
+/* SEARCH DEPTH CONFIGURATIONS 
+	recommended is (9, 3) */
+/* Depth to search per job */
+#define STANDARD_SEARCH_DEPTH (9)
+
+/* Depth for initial run by ROOT */
+/* Note: Ensure that this value is high enough to generate queue entries
+   for all child processes. Likewise, setting this too high results
+   in higher setup time initially. Anywhere between 3-5 seems ideal */
+#define INITIAL_SEARCH_DEPTH (3)
+
+/* Default alphabet size, if none was specified */
+#define STANDARD_ALPHABET_SIZE (3)
+
+/* Observations on config:
+  (6,3) - (9,3) seems to have very little memory usage
+  (10,3) memory usage starts increasing slowly
   (11,3) takes forever to find first max strings. Broad search? */
-#define STANDARD_SEARCH_DEPTH (9)		/* Depth to search per job */
-#define INITIAL_SEARCH_DEPTH (3)		/* Depth for initial run by ROOT */
-#define STANDARD_ALPHABET_SIZE (3)		/* Default alphabet size */
 
-/* Do not modify */
-#define VALID (1)						/* Signals for valid and invalid */
+/*--- END OF CONFIG ---*/
+
+/* Signals for valid and invalid */
+#define VALID (1)
 #define INVALID (0)
 
 /* Constants for MPI signalling */
@@ -68,13 +109,13 @@
 #define EXPECT_QUEUE_TAG	(2006)
 #define QUEUE_TAG			(2007)
 
-/* Macros to avoid function calls. Slight speed boost */
+/* Macros to avoid function calls where possible */
+
 /* Revert BOT entry, if any */
-/* D keeps track of when to switch to previous long's values. */
 #define REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr,temp, box, word_arr) do { \
 	unsigned long long preamble = 0; \
 	exp_temp = alpha_size;	\
-	d = count-1; \
+	d = count-1; /*keeps track of when to switch to previous long's values*/ \
 	temp = word_v; \
 	letter = (word_v % alpha_size);	\
 	if (d % chars_per_long == 0 && count % chars_per_long != 0) box = letter; \
@@ -84,7 +125,6 @@
 	if (DEBUG_V2) printf("BOT_revert: letter: %d\n", letter);	\
 	for (j = 1; j <= alpha_size; j++) { /* find same char */	\
 		if (DEBUG_V2) printf("d: %d, count %d\n", d, count); \
-		/*if (d % (chars_per_long+1) == (chars_per_long) && count % (chars_per_long+1) != chars_per_long) { */\
 		if (d % chars_per_long == 0 && count % chars_per_long != 0) { \
 			if (DEBUG_V2) printf("swapped to prev. long\n"); \
 			preamble = box; \
@@ -105,8 +145,6 @@
 			for (j = 0; j < box % 8; j++) {	\
 				flip /= 2;	\
 			}	\
-			/* TEST */ \
-			/*PROBLEM: TODO: Used to be OR (setting not revert) (fixed?) */ \
 			flip = 255 - flip; \
 			*temp_ptr &= flip;	\
 			if (DEBUG_V2) printf("bot now: %u, flip: %u\n", *temp_ptr, flip); \
@@ -118,6 +156,8 @@
 	}	\
 } while (0)
 
+/* Calculates the value of a box that has 'spilled over' to a previous long*/
+/*e.g. 32 chars per long, and box exists from i=31 to i=33 */
 #define CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,i, box, it) do { \
 	int x = 0; \
 	if (lc != 0 && lc % (chars_per_long) == 0) lc = chars_per_long; \
@@ -159,10 +199,11 @@
 	if (DEBUG_V2) printf("end of spillover method\n"); \
 } while(0)
 
+/* Revert LOT entry to it's previous occurance of the letter */
 #define REVERT_LOT(j, c, temp, it, word_arr, d, label_name) do { \
-	c += i / chars_per_long; /* TODO Check. Fix for over-mods */ \
-	c %= (chars_per_long+1); /* Fix for fix */ \
-	/* TODO Fixes above still needed? */ \
+	/* Both of these are needed */ \
+	c += i / chars_per_long; /* Adjustment for over-mods */ \
+	c %= (chars_per_long+1); /* Adjustment for adjustment */ \
 	if (DEBUG_V2) printf("updating (reverting) LOT\n"); \
 	if (DEBUG_V2) printf("j: %d, c: %d, temp: %llu\n", j, c, temp); \
 	LOT[j] = -1; /*TODO: Rework equation below */ \
@@ -181,7 +222,7 @@
 		temp /= alpha_size; \
 		c--; \
 	} \
-	/* TODO: Update to search previous longs too */ \
+	/* if still not found, Search previous longs */ \
 	if (LOT[j] == -1) { \
 		if (DEBUG_V2) printf("searching previous longs for %d. ii: %d\n",j, (count / chars_per_long) - 1); \
 		for (x = (count / chars_per_long) -1; x >= 0; x--) { \
@@ -202,12 +243,17 @@
 			if (DEBUG_V2) printf("out of loop\n"); \
 		} \
 	} \
-	if (LOT[j] == -1 && i > alpha_size) printf("warning: LOT[%d] == -1 at i == %d\n", j, i); \
+	if ( STATUS && LOT[j] == -1 && i > alpha_size) { \
+		printf("warning: LOT[%d] == -1 at i == %d\n", j, i); \
+	} \
 } while (0)
 
+/* 	Sets count to long_count's value, and long_count to the
+	number of longs needed to fit in said count */
 #define UPDATE_COUNT(count, long_count) do { \
 	count = long_count;	\
 	long_count = (int) (count / chars_per_long); \
+	/* if count is midway through a long, increase the count */ \
 	if (count % chars_per_long != 0) { \
 		long_count++; \
 	} \
@@ -215,13 +261,11 @@
 } while (0)
 /*************************** global variables ******************************/
 
-/* Alphabet used -> alpha_size subset of alpha[] */
+/* Alphabet used: the alpha_size'd subset of alpha[] */
 int alpha_size = STANDARD_ALPHABET_SIZE;
 char alpha[] = {'0','1','2','3','4','5', '6', '7', '8', '9'};
 char last;	/* Last char to process in alphabet. Set in main */
-char file_name[] = "../storage/_.save"; /*_ replaced by function */
-int swap_index = 11;	/* Index of _ above */
-int current_save_number = 0;	/* For naming save files */
+
 /* Theoretical longest word per alphabet size. l(n) = n(l(n-1) +2) */
 int max_word_size[] = {0, 2, 8, 30, 128, 650, 3912, 27398, 219200, 1972818};
 /* Properties of max word found */
@@ -232,7 +276,7 @@ unsigned long long *max_word_l;
 /* Number of 'characters' that can fit in a long long */
 int chars_per_long;
 
-int my_id;		/* Process ID; set in main */
+int my_id;		/* Process's ID; set in main */
 
 /* V2 */
 unsigned long *ST;	/* Suffix_table for current. Table 1 */
@@ -240,6 +284,12 @@ int suffix_depth;
 int *LOT;	/* Last_occurance_table; where alpha char last occured. Table 2 */
 void *BOT; /* Box_occurance_table. Bit table of if box has occured. Table 3 */
 unsigned long long BOT_size;	/* Number of bits in BOT */
+
+/* File-saving */
+char file_name[] = "../saves/n^-_.save"; /* '^', '_' replaced by function */
+int swap_index = 12;	/* Index of '_' above */
+int n_index = 10; /* Index of '^' above */
+int current_save_number = 0;	/* For naming save files */
 
 /*********************** function prototypes *******************************/
 /* Long variants - O(1) search */
@@ -263,9 +313,9 @@ int deep_check(char *string, int len);
  * ROOT does one iteration and adds items to queue, then sends one job to each
  * workers. The workers process the job, and once reach specified depth, sends a
  * signal back to the ROOT to recieve the item to be queued, followed by the
- * string itself. Once complete, the worker sends the maximum size it found back
+ * pattern itself. Once complete, the worker sends the maximum size it found back
  * to ROOT. if this is longer than previous maximum found by all processes, ROOT
- * requests the string and stores it. It then sends the next workload to the
+ * requests the pattern and stores it. It then sends the next workload to the
  * process, and the cycle repeats until a) the queue is empty, or b) a string of
  * theoretical maximum length is found. A stop signal is then sent to all
  * workers (at appropriate times), and once all workers have stopped, ROOT
@@ -326,6 +376,7 @@ int main(int argc, char *argv[])
 	max_word = (char*) malloc(sizeof(char) * (desired_size + 1));  /* +1 for '\0' */
 	max_word[0] = '\0';
 	chars_per_long = sizeof(long long int) * 8 / (log(alpha_size) / log(2));
+	file_name[n_index] = '0' + alpha_size;
 
 	/* Number of longs required to store maximum length pattern */
 	max_longs_needed = (int)(desired_size / chars_per_long);
@@ -393,6 +444,11 @@ int main(int argc, char *argv[])
 
 			free(word_l_arr);
 		}
+		/*	To manually confirm if a pattern is valid, uncomment this
+			and replace str with the pattern. Will do both long and str check */
+		//char str[] = "0123301212303223101302312001313201120213012310321302132301321031203210232013203123020302103201230102301203102310213";
+		//printf("str: %s\nisvalid: %d and %d\n", str, deep_check_l(string_to_longs(str,115),115), deep_check(str, 115))
+
 		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
 		MPI_Barrier(MPI_COMM_WORLD);
 
@@ -632,10 +688,18 @@ int main(int argc, char *argv[])
  *	each new addition is box-valid. Once certain depth is reached, the remaining
  *	possible branches are added to the queue for future iterations to handle.
  *
- * @param word	the string/pattern so far
- * @param depth	how far to travel along the branches before queueing
+ *	Instead of needing to reallocate space every time an extra
+ *	long is needed, allocate space for the maximum length word.
+ *	When queueing/dequeueing, the array is 'shortened' as much
+ *	as possible.
+ *
+ * @param depth		how far to travel along the branches before queueing
+ * @param word_arr	long array containing pattern
+ * @param len		length of pattern (number of 'characters')
 */
 
+/* TODO: Move failsafe code under #if blocks */
+/* TODO: Document how the tables work in process (O(1) search) */
 /* Generally: i is index in array, j, k are actual lengths
 i.e. '0':  i=0, j=k=1 */
 void process(int depth, unsigned long long *word_arr, int len) {
@@ -662,11 +726,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	if (len % chars_per_long != 0) {
 		size++;
 	}
-	/* TODO Move comment to main */
-		/* Instead of needing to reallocate space every time an extra
-	   long is needed, allocate space for the maximum length word.
-	   When queueing/dequeueing, the array is 'shortened' as much
-	   as possible */
 	arr = word_arr;
 
 	if (DEBUG_V2) {
@@ -752,7 +811,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				if (DEBUG_V2) printf("box found. Value: %llu\n", box);
 				/* flip bit */
 				/* Move (box/8) bytes and change (box%8) bit */
-				/* TODO: Can actually check box 1st as failsafe.  Quick */
 				assert(box <= BOT_size);
 				//BOT += box / 8;
 				temp_ptr = (char*) (BOT + (int) (box/8));
@@ -1198,8 +1256,8 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	free(string);
 }
 
-/*	checks if the last character added to a pattern is box-valid (i.e. the box
- *	ending in the len'th character is never repeated.
+/*	checks if the last character added to a pattern is box-valid
+ *	(i.e. the box ending in the len'th character is never repeated)
  *
  *	@param pattern	pattern to be checked, stored as a string
  *	@param len		length of pattern
@@ -1308,8 +1366,8 @@ int deep_check(char* str, int len) {
 }
 
 /* 	Performs a deep check of a pattern stored as an array of longs 
-*	in which all boxes inside the pattern are checked for repeats, not
-*  	just the last box added.
+*	in which all boxes inside the pattern are checked for repeats,
+*	not just the last box added.
 *
 *	It does this by reconstructing the pattern, character by character,
 *	while checking boxes as it goes.
@@ -1501,7 +1559,7 @@ unsigned long long *string_to_longs(char *string, int len) {
 	//arr = malloc(sizeof(unsigned long long) * size);
 	//for (i = 0; i < size; i++) {
 	//	arr[i] = 0;
-	//} /* Temp: make as big as possibly needed */
+	//} /* Make as big as possibly needed */
 	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
 	for (i = 0; i < max_longs_needed; i++) {
 		arr[i] = 0;
@@ -1510,14 +1568,14 @@ unsigned long long *string_to_longs(char *string, int len) {
 	for (i = 0; i < size; i++) { /* For each long */
 		word_v = 0;
 		exponent = 1;
-		if (i < size - 1) { /* Non-last -> full long */
+		if (i < size - 1) { /* Non-last means full long */
 			count = chars_per_long;
 			for (x = 0; x < (chars_per_long-1); x++) {
 				exponent *= alpha_size; /*pow(alpha_size, chars_per_long -1)*/
 			}
 			/* TODO: Check */
 		}
-		else {	/* last long, could be < chars_per_long */
+		else {	/* last long, could be less than chars_per_long  characters */
 			count = len - (i * chars_per_long);
 			for (x = 0; x < count-1; x++) {
 				exponent *= alpha_size; /*pow(alpha_size, count -1)*/
@@ -1533,12 +1591,29 @@ unsigned long long *string_to_longs(char *string, int len) {
 	return arr;
 }
 
-/* TODO: Comment/Doc*/
-/* File layout: alphabet size, followed by entries stored as:
-	max_len	max[0]	max[1]	max[2]	max[3]	...
-	len(l1)	l1[0]	l1[1]	l1[2]	l1[3] etc */
-/* Overwrites filename */
-/* TODO: Move to queue and use transversal to get data without dequeueing */
+/* 	Saves the queue to a given file.
+*	Dequeues each entry and writes its size and length to the file.
+*	If enabled, will also write the current maximum entry to the file.
+*
+*	Should the file name be the same as the global file_name (the default),
+*	it will also rename the file_name as needed to ensure that the maximum
+*	number of copies (see configuration) is reached.
+*	Standard format is: "nX-Y.save", with X being alphabet size, Y being
+* 	the current entry, 0 <= Y < COPIES_KEPT.
+*
+*	Note: It will overwrite files of the same name. So make backups
+*	as needed.
+*
+*	Note: Currently it dequeues the entire queue, so if you wish to continue,
+*	this must be followed by a restore_file call.
+*
+*	File layout: alphabet size, followed by entries stored as:
+*	max_len	max[0]	max[1]	max[2]	max[3]	...
+*	len(l1)	l1[0]	l1[1]	l1[2]	l1[3] etc
+*
+*	@param 	save_name	File name to be saved to
+*/
+/* TODO: Optimisation: Move to queue and use transversal to get data without dequeueing */
 
 void store_queue_to_file(char *save_name) {
 	FILE *file;
@@ -1570,7 +1645,7 @@ void store_queue_to_file(char *save_name) {
 	}
 	queue_size = get_queue_size_l();
 	fprintf(file, "%d\n", alpha_size);
-	if (STATUS) {
+	if (PRINT_SAVE_LOAD) {
 		printf("Storing queue: file: '%s'. Queue at start: %llu\n", save_name, queue_size);
 	}
 	/* Store current max */
@@ -1596,7 +1671,7 @@ void store_queue_to_file(char *save_name) {
 		fprintf(file, "\n");
 		queue_size = get_queue_size_l();
 	}
-	if (STATUS) {
+	if (PRINT_SAVE_LOAD) {
 		printf("Storing queue: Queue at end: %llu\n", queue_size);
 	}
 	close_s:
@@ -1604,8 +1679,15 @@ void store_queue_to_file(char *save_name) {
 	return;
 }
 
+/* 	Restores the queue from a given file. Reads each entry line by line,
+*	saving it's size and long values before enqueueing it.
+*	Will only restore files that have the same corresponding alphabet size.
+*
+*	@param 	save_name	File name be restored from
+*/
+/* TODO: Optimisation: Reverse direction in file. As it currently stands 
+	it restores it in descending order, causing extra transversals in queue */
 void restore_queue_from_file(char *save_name) {
-	/*TODO DOC*/
 	FILE *file;
 	int i, rec;
 	unsigned long long value, *arr;
@@ -1655,7 +1737,7 @@ void restore_queue_from_file(char *save_name) {
 		}
 	}
 
-	if (STATUS) {
+	if (PRINT_SAVE_LOAD) {
 		printf("Restoring queue: Queue at end: %llu\n", get_queue_size_l());
 	}
 	close_r:

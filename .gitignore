@@ -2,10 +2,15 @@
 ## Project-specific files                                                     ##
 ################################################################################
 
-worker
+temp*
+tmp*
 bin/
 *.backup
-
+*.vscode/
+todo_personal.txt
+dumps/
+dump/
+*.save
 ################################################################################
 ## Archives.gitignore; from https://github.com/github/gitignore.git           ##
 ################################################################################
