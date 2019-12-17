@@ -6,11 +6,11 @@
  *  Setup: Create a 'bin', 'src' and 'saves' directory in root of repo
  * 		   place these '*.c' and '*.h' files in the 'src' folder
  * 
- *	compile:	mpicc -o ../bin/search.o queue.c search.c -lm
- *	run:		mpirun -np X ../bin/search.o N <filename>
+ *	compile:  mpicc -O3 -Wall -o ../bin/search.o queue.c search.c -lm
+ *	run:	  mpirun -np X ../bin/search.o N <filename>
  		where X is number processes,
-	 	N alphabet size between 2 and 9 (default if not specified)
-		OPTIONAL: <filename> is the name of the queue file to restore from
+	 	N alphabet size between 2 and 9 (default if not specified),
+		OPTIONAL: <filename> is the name of the save file to restore from
 
  * WARNING: Since one process is used for controlling the rest, do not specify
  * more than the available number of cores. Else the program can lock (ROOT
@@ -22,7 +22,7 @@
  * 	Original scaffolding of sequential process provided by Jaco Geldenhuys
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.6
+ *	@version 2.7
  *	@date 2019-12-17
  *****************************************************************************/
 /* Includes */
@@ -68,8 +68,8 @@
  */
 #define FAILSAFE_MODE (1)
 
-#if FAILSAFE_MODE == 0
 /* Disables assert statements if mode == 0 */
+#if FAILSAFE_MODE == 0
 #define NDEBUG
 #endif
 
@@ -102,15 +102,17 @@
 #define STORE_MAX (1)
 
 /*-- SEARCH DEPTH CONFIGURATIONS -- */
-	/* recommended is (9, 3) */
 /* Depth to search per job */
-#define STANDARD_SEARCH_DEPTH (9)
+/*	recommended is between 6 to 9.
+	I prefer 6/7, as 8/9 takes long to stop when saving */
+#define STANDARD_SEARCH_DEPTH (6)
 
 /* Depth for initial run by ROOT */
 /* Note: Ensure that this value is high enough to generate queue entries
    for all child processes. Likewise, setting this too high results
-   in higher setup time initially. Anywhere between 3-5 seems ideal */
-#define INITIAL_SEARCH_DEPTH (3)
+   in higher setup time initially (or if n=2, run out of work for workers).
+   Anywhere between 3-5 seems ideal */
+#define INITIAL_SEARCH_DEPTH (5)
 
 /* Default alphabet size, if none was specified */
 #define STANDARD_ALPHABET_SIZE (3)
@@ -162,21 +164,19 @@
 		} \
 		if (DEBUG_V2) printf("BOT_revert: searching: %llu\n", ((temp % (exp_temp*alpha_size)) /exp_temp));	\
 		assert (exp_temp > 0); \
-		box = (temp % (exp_temp*alpha_size)) * exponent_2 + preamble; /* box value TODO CHECK*/	\
+		box = (temp % (exp_temp*alpha_size)) * exponent_2 + preamble; /* box value */ \
 		if (((temp % (exp_temp*alpha_size)) /exp_temp) == letter) {	\
-			if (DEBUG_V2) printf("BOT_revert: box value: %llu at j: %d\n", box, j);	\
-			if (DEBUG_V2) printf("exp_temp: %llu, temp: %llu, exponent_2: %llu, preamble: %llu\n", exp_temp, temp, exponent_2, preamble); \
-			BOT += box / 8;	\
-			temp_ptr = (char*) BOT;	\
-			if (DEBUG_V2) printf("bot before: %u\n", *temp_ptr); \
+			if (DEBUG_V2) { \
+				printf("BOT_revert: box value: %llu at j: %d\n", box, j); \
+				printf("exp_temp: %llu, temp: %llu, exponent_2: %llu, preamble: %llu\n", exp_temp, temp, exponent_2, preamble); \
+			} \
+			temp_ptr = (char*) (BOT + (int) (box/8)); \
 			flip = 128;	\
 			for (j = 0; j < box % 8; j++) {	\
 				flip /= 2;	\
 			}	\
 			flip = 255 - flip; \
 			*temp_ptr &= flip;	\
-			if (DEBUG_V2) printf("bot now: %u, flip: %u\n", *temp_ptr, flip); \
-			BOT -= box / 8;	\
 			break;	\
 		}	\
 		exp_temp *= alpha_size;	\
@@ -233,7 +233,7 @@
 	c %= (chars_per_long+1); /* Adjustment for adjustment */ \
 	if (DEBUG_V2) printf("updating (reverting) LOT\n"); \
 	if (DEBUG_V2) printf("j: %d, c: %d, temp: %llu\n", j, c, temp); \
-	LOT[j] = -1; /*TODO: Rework equation below */ \
+	LOT[j] = -1; \
 	while (c > 0) { \
 		d = temp % alpha_size; \
 		if (DEBUG_V2) printf("c: %d d: %d, temp: %llu\n",c, d, temp); \
@@ -241,7 +241,6 @@
 			if (DEBUG_V2) printf("c==d at val %d\n", d); \
 			LOT[j] = c + ((int) (i / chars_per_long)) * chars_per_long; \
 			if (i % chars_per_long == 0 && i != 0) { \
-				/* TODO: FIx needed? */ \
 				LOT[j] -= chars_per_long; \
 			} \
 			break; \
@@ -255,7 +254,7 @@
 		for (x = (count / chars_per_long) -1; x >= 0; x--) { \
 			if (DEBUG_V2) printf("word_arr[%d] == %llu\n", x, word_arr[x]); \
 			temp = word_arr[x]; \
-			c = chars_per_long; /* TODO: -1? */ \
+			c = chars_per_long; \
 			while (c > 0) { \
 				d = temp % alpha_size; \
 				if (DEBUG_V2) printf("c: %d d: %d, d==j: %d, temp: %llu\n",c, d, d==j,temp); \
@@ -371,6 +370,10 @@ int main(int argc, char *argv[])
 
 	/* MPI setup */
 	ierr = MPI_Init(&argc, &argv);
+	if (ierr != MPI_SUCCESS) {
+		fprintf(stderr, "Unable to initialize MPI. Returned %d\n",ierr);
+		return EXIT_FAILURE;
+	}
 	ierr = MPI_Comm_rank(MPI_COMM_WORLD, &my_id);
 	ierr = MPI_Comm_size(MPI_COMM_WORLD, &nbr_procs);
 
@@ -494,6 +497,7 @@ int main(int argc, char *argv[])
 		//printf("str: %s\nisvalid: %d and %d\n", str, deep_check_l(string_to_longs(str,len_of_str),len_of_str), deep_check(str, len_of_str));
 		//unsigned long long larr[] = {2001406842180043230ul, 1596274616668200525ul,
 		//				10253438019288845851ul,20158688551ul};
+
 		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
 		MPI_Barrier(MPI_COMM_WORLD);
 
@@ -622,7 +626,7 @@ int main(int argc, char *argv[])
 			}
 			/* Need to queue a pattern */
 			else if (status.MPI_TAG == EXPECT_QUEUE_TAG) {
-				if (stop) { /* New work  TODO rework */
+				if (stop) { /* New work has been added to queue  */
 					stop = 0;
 				}
 				count = rec_count;
@@ -663,7 +667,6 @@ int main(int argc, char *argv[])
 				signal to all. This should only occur on a bug, so not urgent */
 			}
 		}
-		//free(max_word); /* Needed? TODO*/
 		max_word = longs_to_string(max_word_l,max_length);
 
 		/* print status */
@@ -757,13 +760,12 @@ int main(int argc, char *argv[])
  * @param len		length of pattern (number of 'characters')
 */
 
-/* TODO: Document how the tables work in process (O(1) search) */
 /* Generally: i is index in array, j, k are actual lengths
 i.e. '0':  i=0, j=k=1 */
 void process(int depth, unsigned long long *word_arr, int len) {
-	int k = len, size, count, long_count;
+	int k = len, size, count=0, long_count;
 	int x, i = 0, j = 0, letter = 0, lc, c,d, counter, it, flip;
-	int valid = 1, next, o_valid, have_gone_back = 0; /*HGB: see BOT reverse */
+	int next, o_valid = 1, have_gone_back = 0; /*HGB: see BOT reverse */
 	char *temp_ptr, *string, next_char = '/';
 	unsigned long *new_ST;
 	unsigned long long exponent = 0, exponent_2,exponent_3, exp_temp, box;
@@ -958,12 +960,12 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	counter = count;
 	max_length = len;
 	word_v = old_word_v;
+	/* increases long count if needed */
 	if (count % chars_per_long == 1 && count != 1) {
 		arr[count/chars_per_long] = word_v;
 		word_v = 0;
 	}
 
-	/* TODO: increase long count if needed */
 	word_v *= alpha_size;
 	if (DEBUG_V2) printf("word_v == %llu\n", word_v);
 	next_char = '/';
@@ -976,9 +978,14 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (DEBUG) {
 				printf("(%d)string too deep\n", my_id);
 			}
-			/* TODO: Figure out why invalids are getting put here
+			/* TODO: Enqueue invalidity problem.
+			Figure out why invalids are getting put here.
 			(suspect it's due to a multiplication after a check to
-			'setup' next one, which it then queues without checking)*/
+			'setup' next one, which it then queues without checking.
+			OR it has to do with valid leaves (no future options)
+			being added to queue, which in processing adds an
+			impossible character?). Problem existed since the original
+			seqential process code and haven't been able to track it down */
 			#if FAILSAFE_MODE >= 2
 			if (deep_check_l(arr,count-1)) {	/* Failsafe check */
 			#else
@@ -1012,7 +1019,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (count % chars_per_long == 0 && count != 0) {
 				long_count--; /* if last char, shouldn't increment count */
 			}
-			/* TODO: possible first error*/
 			arr[long_count] = word_v;
 			if (DEBUG_V2) printf("i--: long_count == %d, count == %d\n", long_count, count);
 			if (count % (chars_per_long) != 1 || count == 1) {
@@ -1081,7 +1087,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 
 			if (j < alpha_size+1 && i / chars_per_long > 0) { /* previous long needed */
 				if (DEBUG_V2) printf("rollover revert for i:%d, j:%d\n",i, j);
-				/* TODO: Check if below accesses correct entry */
 				temp = word_arr[(i+1) / chars_per_long - 1];
 				j = alpha_size+1 - j;
 				exp_temp = 1;
@@ -1108,10 +1113,9 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (count % chars_per_long == 0 && count != 0) {
 				long_count--; /* if last char, shouldn't increment count */
 			}
-			/* TODO: possible bug here with long_count setting */
 			arr[long_count] = word_v;
 			if (DEBUG_V2) printf("<>long_count: %d, count : %d\n", long_count, count);
-			if (count % (chars_per_long) == 1 && count != 1 && long_count > 0) { /* TODO: -1? */
+			if (count % (chars_per_long) == 1 && count != 1 && long_count > 0) {
 				if (DEBUG_V2) printf("\n\nreverting to arr[%d] as count == %d\n\n\n", long_count-1, count);
 				word_v = arr[long_count-1];
 			}
@@ -1148,15 +1152,12 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				printf("[%d]: %d\n",j, LOT[j]);
 			}
 		}
-		// else increment word_v
-		//assert(next_char == word[i]); TODO clean up
-		//if (word[i] != alpha[0]) {
 		if (next_char != alpha[0]) {
 			/* Update (revert) BOT entry, if any */
 			if (o_valid || have_gone_back) {
 				REVERT_BOT_ENTRY(d, j, word_v, exp_temp, exponent_2, letter, temp_ptr, temp, box, word_arr);
 			}
-			/* Update LOT entry TODO CHECK IF LOCATION RIGHT */
+			/* Update LOT entry */
 			j = word_v % alpha_size;
 			c = i % (chars_per_long+1);
 			temp = word_v / alpha_size;
@@ -1201,8 +1202,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 		}
 		/* ---- V2: check if valid ---- */
 		/* find box */
-		/* TODO: Replace i with len everywhere, keep track of length
-		using it. Speeds up other functions too */
 		box = -1;
 		temp_ptr = BOT;
 		if (DEBUG_V2) {
@@ -1280,11 +1279,9 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (count % chars_per_long == 0 && count != 0) {
 				long_count--; /* if last char, shouldn't increment count */
 			}
-			/* TODO: Used to be long_count = count / (chars_per_long+1);*/
 			if (DEBUG_V2) printf("arr[%d] updated to %llu\n", long_count, word_v);
 			arr[long_count] = word_v;
 			if (DEBUG_V2) printf("i == %d, it == %d, count == %d, long_count == %d\n", i, it, count, long_count);
-			//if (count % chars_per_long < chars_per_long-1) { /* Todo: fix to remove -1 */
 			if (count % chars_per_long != 0 || count == 0) {
 				word_v *= alpha_size;
 			} else {
@@ -1338,7 +1335,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
  *	@return			VALID or INVALID respectively
  */
 
-/* TODO: Refactor */
+/* TODO: Refactor. Not urgent as only used in string comparisons */
 int box_valid(char* pattern, int len) {
 	char c, c_end;
 	int count = 1, b1_end = len, b1_start = b1_end, b2_start, b2_end, i = 0;
@@ -1658,14 +1655,12 @@ unsigned long long *string_to_longs(char *string, int len) {
 			for (x = 0; x < (chars_per_long-1); x++) {
 				exponent *= alpha_size; /*pow(alpha_size, chars_per_long -1)*/
 			}
-			/* TODO: Check */
 		}
 		else {	/* last long, could be less than chars_per_long  characters */
 			count = len - (i * chars_per_long);
 			for (x = 0; x < count-1; x++) {
 				exponent *= alpha_size; /*pow(alpha_size, count -1)*/
 			}
-			/* TODO: Check */
 		}
 		for (j = 0; j < count; j++) { /* Get chars from long */
 			word_v += (string[i * chars_per_long + j] - alpha[0]) * exponent;
@@ -1717,9 +1712,8 @@ void store_queue_to_file(char *save_name) {
 	}
 	file = fopen(save_name,"w");
 	if (!file) {
-		fprintf(stderr, "Unable to create file. ");
-		fprintf(stderr,
-			"Please create directory 'saves' in root of this repo\n");
+		printf("Unable to create file. ");
+		printf("Please create directory 'saves' in root of this repo\n");
 		return;
 	}
 	fprintf(file, "%d\n", alpha_size);
@@ -1771,10 +1765,15 @@ void restore_queue_from_file(char *save_name) {
 	}
 
 	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
-	fscanf(file, "%d", &rec);
+	if (!fscanf(file, "%d", &rec)) {
+		fprintf(stderr,
+			"invalid file to read from. No alpha-size available\n");
+			goto close_r;
+	}
 	/* Only read from a file with same alpha_size */
 	if (rec != alpha_size) {
-		fprintf(stderr, "invalid file to read from.\n");
+		fprintf(stderr, 
+			"invalid file to read from. Incorrect alphabet size\n");
 		fprintf(stderr,
 			"alpha_size: %d, file_alpha_size: %d\n", alpha_size, rec);
 		goto close_r;

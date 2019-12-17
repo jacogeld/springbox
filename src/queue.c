@@ -3,7 +3,7 @@
  *	compile: see search.c
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.6
+ *	@version 2.7
  *	@date 2019-12-17
  *****************************************************************************/
 
@@ -116,7 +116,6 @@ void enqueue_l(unsigned long long *arr, int count) {
 	Count is set to length */
 int dequeue_l(unsigned long long *arr, int* count) {
 	NodeL *old_head;
-	long long *ptr;
 	int i, size;
 	*count = queue_head_l->size; 
 
@@ -150,10 +149,6 @@ void store_queue_helper(FILE *file, int max_longs_needed) {
 	unsigned long long *arr;
 	NodeL *search;
 	int i = 0, size = 0, longs_needed;
-	if (arr == NULL) {
-		fprintf(stderr, "Unable to malloc space for arr in helper function\n");
-		return;
-	}
 	search = queue_head_l;
 	if (search == NULL) return;
 	while (search != NULL) {

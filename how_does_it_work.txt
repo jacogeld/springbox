@@ -1,0 +1,66 @@
+The purpose of this text file is to explain some of the basic 
+concepts of the layout of the code. Code-specific comments are 
+available in search.c, however adding this as a comment there
+would make navigation difficult. I hope that by reading this, it 
+will make future additions to the code easier.
+
+GENERAL STRUCTURE OF CODE:
+main() handles most MPI_calls, and is divided into 3 sections:
+a) Shared section: setup of variables
+b) Root/master: handles the queue, storing the maximum, keeping
+	track of overall progress, etc. Gives work to to the workers.
+	Does an initial run to generate work for all workers, then never
+	personally runs process() again.
+c) Workers/slaves: Fetches work (a pattern) from master, processes
+	it to a required depth, sends lengthened patterns back to master
+	to enqueue, sends its local max to main and if larger than best,
+	sends the actual pattern back too,
+Process() handles the actual construction of the pattern, checking
+box-validity, enqueueing based on root/worker, etc.
+Code (excessively) commented to hopefully explain the logic behind it.
+
+VERSION_2: HOW DO THE TABLES WORK
+The bulk of the version 2 modifications of the process() code relies
+on the O(1) search suggested by Jaco. 
+Firstly, all patterns are stored arithmetrically as longs. This is done
+by re-creating each pattern as a 'alphabet-size'-based number, and storing
+that as a long. For example, N=2 would appear as binary,
+and stored as such. Trickery is needed to handle patterns not able to be
+stored as a single long, but that is described in search.c.
+It then breaks down to 3 tables:
+Last-occurance table: A N-sized int table containing the last index
+of the occurance of each character in the alphabet.
+Box-occurance table: A bit-table with each entry having a value of 
+0 if the box at that value hasn't occured, 1 if it has
+Suffix-table: A table containing the value of the last N+1 characters
+of the pattern being processed
+
+First calculate a new suffix-table containing the letter you wish to add at
+location i. If the letter at i-x (0<x<alpha_size+1) has a i-x value in the 
+LOT, then a box has occured. The value of the box exists in the suffix table 
+at entry x. If the bit == 1 in the BOT, then it is invalid.
+If not, set the bit to 1 and carry on.
+The exact details are more intense (reverting especially), but the comments
+in process() should help.
+
+FUTURE OPTIMISATIONS
+Since the goal was to get a MPI implementation working, there where
+optimisations that could not be implemented in time. However - they may
+be worthwhile for future improvements, hence the documentation here:
+a) Restore_queue_from_file should reverse order of items before enqueueing.
+	Currently enqueue stores in save file in descending order
+	(due to priority queue), so revert restores in descending order.
+	This leads to excessive transversals of the queue linked-list
+	(needs to insert at tail each time without realising it), leading
+	to slower load  times.
+
+b) Functionality to prevent initial_depth_size being lower than needed
+	for processes selected (instead of doing it manually).
+
+c) General restructuring and refactoring of code where possible
+	(see TODOs left in code for guidelines)
+
+d) Enqueue invalidity problem needs to be fixed (see search.c)
+	-> guarentees no pointless overhead
+
+e) Rework the bit-table to behave better (no void*)
