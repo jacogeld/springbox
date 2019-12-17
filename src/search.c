@@ -21,7 +21,7 @@
  * 	Original scaffolding of sequential process provided by Jaco Geldenhuys
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.4
+ *	@version 2.5
  *	@date 2019-12-17
  *****************************************************************************/
 /* Includes */
@@ -71,6 +71,10 @@
 
 /* Prints status messages (alphabet size being used, etc) */
 #define STATUS (1)
+
+/* Prints status messages related to stalling processes
+   (Not needed unless wanting to see when a process is idling) */
+#define STATUS_2 (0)
 
 /* Prints maximum whenever it is updated / a new max is found */
 #define PRINT_MAX (1)
@@ -359,6 +363,7 @@ int main(int argc, char *argv[])
 	/* For saving */
 	clock_t start_time, current_time;
 	double elapsed_time;
+	int save_needed = 0, stall_count = 0;
 
 	/* MPI setup */
 	ierr = MPI_Init(&argc, &argv);
@@ -502,14 +507,19 @@ int main(int argc, char *argv[])
 				current_time = clock();
 				elapsed_time = ((double) (current_time - start_time)) / CLOCKS_PER_SEC / 60;
 				if (elapsed_time > QUEUE_TIME) {
-					/* 	TODO: figure out how to get items not in queue,
-						but being processed still and about to be enqueued */
-					store_queue_to_file(file_name);
-					restore_queue_from_file(file_name);
-					start_time = clock();
+					/* If a save is needed, continue as normal. Whenever
+					   a process sends back a maximum (i.e. done), stall 
+					   the process. Once all processes stall (i.e. queue 
+					   has all entries), save it, and then resume 
+					   each process by giving it new work */
+					if (STATUS_2 && save_needed == 0) {
+						printf("save needed\n");
+					}
+					save_needed = 1;
 				}
 			}
 			if (queue_size <= 0 || max_length >= desired_size) {
+				/* Reached goal. Either explored all, or found longest */
 				stop = 1;
 			}
 			/* Recieve a reply */
@@ -551,13 +561,28 @@ int main(int argc, char *argv[])
 					if (active_processes == 0) {
 						break;
 					}
+				} 
+				else if (save_needed == 1) {
+					/* Empty out processes into queue before saving */
+					stall_count++;
+					waiting_for_work[an_id] = 1;
+					if (STATUS_2) printf("process %d stalled for save\n", an_id);
+					if (stall_count == active_processes) {
+						if (STATUS_2) printf("saving file\n");
+						store_queue_to_file(file_name);
+						restore_queue_from_file(file_name);
+						save_needed = 0;
+						waiting_count = stall_count;
+						stall_count = 0;
+						start_time = clock();
+					}
 				} /* ...or send the next work available in queue */
 				else if (!dequeue_l(word_l_arr, &send_count)) {
 					/* Queue temporarily empty;
-					 wait until next queue request to send data to process
-					 TODO: Verify that this works correctly. Hopefully never
-					 needs to run */
-					if (STATUS) printf("stalled process %d due to empty queue\n",
+					 wait until next enqueue request to send data to process
+					 This should never run (unless queuesize==0 check earlier
+					 is removed) */
+					if (STATUS_2) printf("stalled process %d due to empty queue\n",
 						an_id);
 					assert(an_id < nbr_procs);
 					waiting_for_work[an_id] = 1;
@@ -592,16 +617,11 @@ int main(int argc, char *argv[])
 				if (DEBUG) printf("<%d> asked to enqueue. word_l_arr[0]: %llu, size: %d, reccount: %d\n",
 					my_id, word_l_arr[0], count, rec_count);
 				enqueue_l(word_l_arr, count);
-				//printf("count: %d, queue_size: %llu. Enqueued: %llu %llu %llu %llu\n", rec_count, queue_size,word_l_arr[0],word_l_arr[1],word_l_arr[2],word_l_arr[3]);
-
 			}
 			queue_size = get_queue_size_l();
-			/* Send to stalled processes due to empty queue. Ideally never
-			   needs to run */
+			/* Send work to any stalled processes if available
+			   This either occurs due to a once-empty queue, or due to a save */
 			if (waiting_count > 0 && queue_size >= waiting_count) {
-				if (STATUS) {
-					printf("Recover from a stall due to empty queue\n");
-				}
 				for (i = 0; i < nbr_procs; i++) {
 					if (waiting_for_work[i] == 1) {
 						dequeue_l(word_l_arr, &send_count);
@@ -609,6 +629,8 @@ int main(int argc, char *argv[])
 							printf("(n)Dequeued [0]: %llu with length %d\n", word_l_arr[0], send_count);
 							printf("queuesize: %lld\n", get_queue_size_l());
 						}
+						an_id = i;
+						if (STATUS_2) printf("process %d restarted\n", an_id);
 						ierr = MPI_Send(&send_count, 1, MPI_INT, an_id,
 							NEW_WORK_TAG, MPI_COMM_WORLD);
 						UPDATE_COUNT(count, send_count);
@@ -618,20 +640,17 @@ int main(int argc, char *argv[])
 				}
 				waiting_count = 0;
 				queue_size = get_queue_size_l();
+				/*TODO: If queuesize=0 and all processes waiting, send stop
+				signal to all. This should only occur on a bug, so not urgent */
 			}
 		}
 		//free(max_word); /* Needed? TODO*/
 		max_word = longs_to_string(max_word_l,max_length);
-		/* qs == 0 => explored all || ml == ds => found a longest pattern */
-		/* Send stop signal to all processes */
 
 		/* print status */
 		printf("\n*********** FINISHED *********\n");
 		printf("max == %d\n", max_length);
 		printf("max word == %s\n", max_word);
-		//for (i = 0; i < desired_size/chars_per_long +1; i++) {
-		//	printf("max_word_l[%d]: %llu\n", i, max_word_l[i]);
-		//}
 		printf("queue size == %lld\n", get_queue_size_l());
 		printf("max valid? %d and %d\n", deep_check(max_word, max_length),
 		deep_check_l(max_word_l,max_length));
