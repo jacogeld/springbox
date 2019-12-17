@@ -3,10 +3,11 @@
  *	multiple workers at once. Relies on a queue-based system to handle jobs
  *	between workers.
  * 
- *  Setup: Create a 'bin' and 'saves' directory in root of repo
+ *  Setup: Create a 'bin', 'src' and 'saves' directory in root of repo
+ * 		   place these '*.c' and '*.h' files in the 'src' folder
  * 
  *	compile:	mpicc -o ../bin/search.o queue.c search.c -lm
- *	run:		mpirun -np X ./search.o	N <filename>
+ *	run:		mpirun -np X ../bin/search.o N <filename>
  		where X is number processes,
 	 	N alphabet size between 2 and 9 (default if not specified)
 		OPTIONAL: <filename> is the name of the queue file to restore from
@@ -21,7 +22,7 @@
  * 	Original scaffolding of sequential process provided by Jaco Geldenhuys
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.5
+ *	@version 2.6
  *	@date 2019-12-17
  *****************************************************************************/
 /* Includes */
@@ -57,10 +58,13 @@
  * where it would rarely enqueue an invalid pattern. There's two solutions
  * to this:
  * a) set 2 above and the deep_check will prevent invalid patterns
- * from being enqueued. This is quite a bit slower.
+ * from being enqueued into the queue. This is quite a bit slower, but queue
+ * will always be correct. 
  * b) Set 0 or 1 above, and a second check will prevent an invalid pattern
  * from being processed. Faster, however the queue will then also contain
- * possibly invalid patterns. Will be picked up before processing though.
+ * possibly invalid patterns.
+ * 
+ * Either way, an invalid case will never be processed. 
  */
 #define FAILSAFE_MODE (1)
 
@@ -439,7 +443,6 @@ int main(int argc, char *argv[])
 	/*Padding to next byte */
 	BOT_size += BOT_size % 8;
 	BOT = malloc(BOT_size);
-
 	/* Root/Master */
 	if (my_id == ROOT_PROCESS) {
 		start_time = clock();
@@ -453,6 +456,20 @@ int main(int argc, char *argv[])
 			if (get_queue_size_l() == 0) {
 				printf("Nothing was able to be restored from file\n");
 				return EXIT_FAILURE;
+			}
+			/* Set max to highest in queue */
+			dequeue_l(max_word_l, &max_length);
+			if (!deep_check_l(max_word_l, max_length)) {
+				/* If not valid, just set back to 0 and carry on */
+				max_length = 0;
+				for (i = 0; i < max_longs_needed; i++) {
+					max_word_l[i] = 0;
+				}
+			}
+			else { /* requeue the valid best, in case there's more to it */
+				enqueue_l(max_word_l, max_length);
+				if (STATUS) printf("Reverted to last-best of length %d\n",
+					max_length);
 			}
 		}
 		else { 
@@ -475,6 +492,8 @@ int main(int argc, char *argv[])
 		//char str[] = "0123301212303223101302312001313201120213012310321302132301321031203210232013203123020302103201230102301203102310213";
 		//int len_of_str = 115;
 		//printf("str: %s\nisvalid: %d and %d\n", str, deep_check_l(string_to_longs(str,len_of_str),len_of_str), deep_check(str, len_of_str));
+		//unsigned long long larr[] = {2001406842180043230ul, 1596274616668200525ul,
+		//				10253438019288845851ul,20158688551ul};
 		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
 		MPI_Barrier(MPI_COMM_WORLD);
 
@@ -570,7 +589,7 @@ int main(int argc, char *argv[])
 					if (stall_count == active_processes) {
 						if (STATUS_2) printf("saving file\n");
 						store_queue_to_file(file_name);
-						restore_queue_from_file(file_name);
+						//restore_queue_from_file(file_name);
 						save_needed = 0;
 						waiting_count = stall_count;
 						stall_count = 0;
@@ -937,7 +956,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	i = k;
 	count = i+1;
 	counter = count;
-
+	max_length = len;
 	word_v = old_word_v;
 	if (count % chars_per_long == 1 && count != 1) {
 		arr[count/chars_per_long] = word_v;
@@ -953,7 +972,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			printf("exploring position i: %d, count:%d\n", i, count);
 			printf("word_v at start: %llu\n", word_v);
 		}
-		if (i == k + depth) {;
+		if (i == k + depth) {
 			if (DEBUG) {
 				printf("(%d)string too deep\n", my_id);
 			}
@@ -966,7 +985,6 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			if (1) {
 			#endif
 				if (my_id != ROOT_PROCESS) {
-					/* TODO: swap to count-1 */
 					MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
 						MPI_COMM_WORLD);
 					j = (int) ((count-1) / chars_per_long);
@@ -1285,6 +1303,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			count++;
 			if (DEBUG_V2) printf("word_v * alpha_size. now %llu\n", word_v);
 			assert(i <= max_word_size[alpha_size]);
+			//printf("<%d> comparing i=%d to max_len=%d\n",my_id,i,max_length);
 			if (i > max_length) {
 				max_length = i;
 				free(max_word);
@@ -1657,7 +1676,7 @@ unsigned long long *string_to_longs(char *string, int len) {
 	return arr;
 }
 
-/* 	Saves the queue to a given file.
+/*	Saves the queue to a given file.
 *	Dequeues each entry and writes its size and length to the file.
 *	If enabled, will also write the current maximum entry to the file.
 *
@@ -1670,9 +1689,6 @@ unsigned long long *string_to_longs(char *string, int len) {
 *	Note: It will overwrite files of the same name. So make backups
 *	as needed.
 *
-*	Note: Currently it dequeues the entire queue, so if you wish to continue,
-*	this must be followed by a restore_file call.
-*
 *	File layout: alphabet size, followed by entries stored as:
 *	max_len	max[0]	max[1]	max[2]	max[3]	...
 *	len(l1)	l1[0]	l1[1]	l1[2]	l1[3] etc
@@ -1682,8 +1698,7 @@ unsigned long long *string_to_longs(char *string, int len) {
 
 void store_queue_to_file(char *save_name) {
 	FILE *file;
-	unsigned long long queue_size, *arr;
-	int size, i;
+	int i;
 	if (my_id != ROOT_PROCESS) {
 		fprintf(stderr, "Only root process can process queue\n");
 		return;
@@ -1704,14 +1719,13 @@ void store_queue_to_file(char *save_name) {
 	if (!file) {
 		fprintf(stderr, "Unable to create file. ");
 		fprintf(stderr,
-			"Please create directory 'storage' in root of this repo\n");
+			"Please create directory 'saves' in root of this repo\n");
 		return;
 	}
-	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
-	queue_size = get_queue_size_l();
 	fprintf(file, "%d\n", alpha_size);
 	if (PRINT_SAVE_LOAD) {
-		printf("Storing queue: file: '%s'. Queue at start: %llu\n", save_name, queue_size);
+		printf("Storing queue: file: '%s'. Queue at start: %llu\n",
+			save_name, get_queue_size_l());
 	}
 	/* Store current max */
 	if (STORE_MAX) {
@@ -1722,27 +1736,8 @@ void store_queue_to_file(char *save_name) {
 		fprintf(file, "\n");
 	}
 	/* Store the queue */
-	while (queue_size) {
-		for (i = 0; i < max_longs_needed; i++) {
-			arr[i] = 0;
-		}
-		if (!dequeue_l(arr, &size)) {
-			fprintf(stderr, "error dequeueing\n");
-			goto close_s;
-			return;
-		}
-		fprintf(file,"%d", size);
-		for (i = 0; i < max_longs_needed; i++) {
-			fprintf(file, " %llu", arr[i]);
-		}
-		fprintf(file, "\n");
-		queue_size = get_queue_size_l();
-	}
-	if (PRINT_SAVE_LOAD) {
-		printf("Storing queue: Queue at end: %llu\n", queue_size);
-	}
-	close_s:
-	free(arr);
+	store_queue_helper(file, max_longs_needed);
+
 	fclose(file);
 	return;
 }

@@ -3,14 +3,15 @@
  *	compile: see search.c
  *
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.0.1
- *	@date 2019-12-13
+ *	@version 2.6
+ *	@date 2019-12-17
  *****************************************************************************/
 
 /* Includes */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include "search.h"
 
 /* Definitions and macros */
@@ -25,6 +26,8 @@ long long get_queue_size();
 void enqueue_l(unsigned long long *arr, int count);
 int dequeue_l(unsigned long long *arr, int *count);
 long long get_queue_size_l();
+void store_queue_helper(FILE *file, int max_longs_needed);
+
 
 
 typedef struct NodeStruct {
@@ -143,7 +146,44 @@ int dequeue_l(unsigned long long *arr, int* count) {
 	return SUCCESS;
 }
 
-/*------------------------OLD STRING CODE-------------------------------------*/
+void store_queue_helper(FILE *file, int max_longs_needed) {
+	unsigned long long *arr;
+	NodeL *search;
+	int i = 0, size = 0, longs_needed;
+	if (arr == NULL) {
+		fprintf(stderr, "Unable to malloc space for arr in helper function\n");
+		return;
+	}
+	search = queue_head_l;
+	if (search == NULL) return;
+	while (search != NULL) {
+		/* Check for bad queue entry */
+		assert(search->item != NULL && search->size != 0);
+		/* Save size */
+		size = search->size;
+		arr = search->item;
+		longs_needed = size / chars_per_long;
+		if (size % chars_per_long != 0) {
+			longs_needed++;
+		}
+		fprintf(file,"%d", size);
+
+		/* Save array */
+		for (i = 0; i < max_longs_needed; i++) {
+			if (i+1 > longs_needed) {
+				/* Entry doesn't exist */
+				fprintf(file, " %llu", 0ull);
+			}
+			else {
+				fprintf(file, " %llu", arr[i]);
+			}
+		}
+		fprintf(file, "\n");
+		search = search->next;
+	}
+}
+
+/*--------------------------- STRING CODE-------------------------------------*/
 long long get_queue_size() {
 	return queue_len;
 }
