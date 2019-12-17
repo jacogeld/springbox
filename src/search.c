@@ -12,17 +12,17 @@
 		OPTIONAL: <filename> is the name of the queue file to restore from
 
  * WARNING: Since one process is used for controlling the rest, do not specify
- * more than the available number of cores. Else the program can lock (admin
+ * more than the available number of cores. Else the program can lock (ROOT
  * process essentially waits for itself) 
  * 
  * If attempting to use debugging flags, strongly recommend
  * piping output to file.
  * 
- * 	Original scaffolding of process provided by Jaco Geldenhuys
+ * 	Original scaffolding of sequential process provided by Jaco Geldenhuys
  * 
  *	@author C. R. Zeeman (caleb.zeeman@gmail.com)
- *	@version 2.3
- *	@date 2019-12-16
+ *	@version 2.4
+ *	@date 2019-12-17
  *****************************************************************************/
 /* Includes */
 #include <stdio.h>
@@ -45,9 +45,29 @@
 #define DEBUG_V2 (0)
 
 /* Enables extra failsafes to ensure answer is definitely valid.
-	These slow down processing speed, so once it has been tested a few times,
-	these should be disabled. */
-#define FAILSAFE_ENABLED (1)
+ * Some of these slow down processing speed, so once it has been
+ * tested a few times, these should be disabled.
+ * Recommended mode: 1.
+ * 0 - No failsafes
+ * 1 - Basic assertions and surrounding ifs
+ * 2 - Above and enqueue deep_check_l
+ * 3 - Above and string deep_check & assertion built into deep_check_l
+ * 
+ * WARNING: There's still a bug from the original sequential code
+ * where it would rarely enqueue an invalid pattern. There's two solutions
+ * to this:
+ * a) set 2 above and the deep_check will prevent invalid patterns
+ * from being enqueued. This is quite a bit slower.
+ * b) Set 0 or 1 above, and a second check will prevent an invalid pattern
+ * from being processed. Faster, however the queue will then also contain
+ * possibly invalid patterns. Will be picked up before processing though.
+ */
+#define FAILSAFE_MODE (1)
+
+#if FAILSAFE_MODE == 0
+/* Disables assert statements if mode == 0 */
+#define NDEBUG
+#endif
 
 /* Prints status messages (alphabet size being used, etc) */
 #define STATUS (1)
@@ -73,8 +93,8 @@
 /* Whether or not to store the maximum found so far in the save file too */
 #define STORE_MAX (1)
 
-/* SEARCH DEPTH CONFIGURATIONS 
-	recommended is (9, 3) */
+/*-- SEARCH DEPTH CONFIGURATIONS -- */
+	/* recommended is (9, 3) */
 /* Depth to search per job */
 #define STANDARD_SEARCH_DEPTH (9)
 
@@ -187,15 +207,14 @@
 	if (DEBUG_V2) printf("box before add: %llu\n", box); \
 	if (DEBUG_V2) printf("temp: %llu\n", temp); \
 	if (DEBUG_V2) printf("exponent_3: %llu\n", exponent_3); \
-	box += temp * exponent_3; /* TODO check if correct */ \
+	box += temp * exponent_3; \
 	if (DEBUG_V2) printf("new box: %llu\n", box); \
-	/*DELME*/ \
 	if (box > BOT_size) { \
+		/* If assert fails, print surrounding variables */ \
 		printf("box: %llu, lc: %d\n", box, lc); \
 		printf("word_v: %llu, temp: %llu\n", word_arr[i], temp); \
+		assert(box <= BOT_size); \
 	} \
-	/*<DELME>*/ \
-	assert(box <= BOT_size); \
 	if (DEBUG_V2) printf("end of spillover method\n"); \
 } while(0)
 
@@ -326,16 +345,19 @@ int deep_check(char *string, int len);
 int main(int argc, char *argv[])
 {
 	/* Setup */
-	int ierr = 0, nbr_procs = 0, rec_count, send_count, an_id, i = 0, j = 0,
-	desired_size, stop = 0, count;
-	long partial_sum = 0;
-	long long queue_size = 0;
+	int desired_size, stop = 0, count, i = 0, j = 0;
+	unsigned long long partial_sum = 0;	/* Calculating box size */
+	unsigned long long queue_size = 0;	/* Number entries in queue */
+	/* Variables used for MPI communication */
 	MPI_Status status;
-	char *w; 
+	int ierr = 0, nbr_procs = 0, rec_count, send_count, an_id;
+	char *w; /* used for temporary conversions and intial setup */
 	/* Keeps track of how many processes have been successfully stopped */
-	int active_processes, waiting_count = 0;
-	int *waiting_for_work;	/* For when queue is empty and continuing */
-	clock_t start_time, current_time; /* For saving */
+	int active_processes;
+	/* For when queue is empty and continuing */
+	int waiting_count = 0, *waiting_for_work;
+	/* For saving */
+	clock_t start_time, current_time;
 	double elapsed_time;
 
 	/* MPI setup */
@@ -435,27 +457,26 @@ int main(int argc, char *argv[])
 				w[i] = alpha[i];
 			}
 			w[i] = '\0';
-			/* TODO: remove w[]*/
 			word_l_arr = string_to_longs(w, alpha_size);
-			/* TEMP TODO DELME*/
-			w = realloc(w, max_word_size[alpha_size] + 1);
-			
+			free(w);
+
 			process(INITIAL_SEARCH_DEPTH, word_l_arr, alpha_size);
 
 			free(word_l_arr);
 		}
-		/*	To manually confirm if a pattern is valid, uncomment this
-			and replace str with the pattern. Will do both long and str check */
+		/*	TOOL: To manually confirm if a pattern is valid,
+			uncomment this and replace str with the pattern
+			and fill in size. Will do both long and str check */
 		//char str[] = "0123301212303223101302312001313201120213012310321302132301321031203210232013203123020302103201230102301203102310213";
-		//printf("str: %s\nisvalid: %d and %d\n", str, deep_check_l(string_to_longs(str,115),115), deep_check(str, 115))
-
+		//int len_of_str = 115;
+		//printf("str: %s\nisvalid: %d and %d\n", str, deep_check_l(string_to_longs(str,len_of_str),len_of_str), deep_check(str, len_of_str));
 		word_l_arr = malloc(sizeof(long long) * max_longs_needed);
 		MPI_Barrier(MPI_COMM_WORLD);
 
 		/* Send initial instructions to each process */
 		for (an_id = 1; an_id < nbr_procs; an_id++) {
 			if (!dequeue_l(word_l_arr, &send_count)) {
-				printf("%d: dequeue failed\n", my_id);
+				printf("<%d> dequeue failed at %d\n", my_id, an_id);
 				break;	/* Failsafe */	
 			}
 			if (DEBUG) {
@@ -584,7 +605,6 @@ int main(int argc, char *argv[])
 				for (i = 0; i < nbr_procs; i++) {
 					if (waiting_for_work[i] == 1) {
 						dequeue_l(word_l_arr, &send_count);
-						send_count = strlen(w);
 						if (DEBUG) {
 							printf("(n)Dequeued [0]: %llu with length %d\n", word_l_arr[0], send_count);
 							printf("queuesize: %lld\n", get_queue_size_l());
@@ -658,10 +678,11 @@ int main(int argc, char *argv[])
 					}
 				}
 				if (DEBUG) {
+					w = longs_to_string(word_l_arr, count);
 					printf("beginning process. w: %s\n", w);
+					free(w);
 					printf("word_l_arr[0]: %llu, count: %d\n", word_l_arr[0], count);
 					printf("word_l_arr[1]: %llu\n", word_l_arr[1]);
-					printf("&word_l: %p\t&w: %p\n",&word_l_arr, &w);
 				}
 				process(STANDARD_SEARCH_DEPTH, word_l_arr, count);		;
 				//printf("<%d> finished processing, sending max back\n", my_id);
@@ -698,7 +719,6 @@ int main(int argc, char *argv[])
  * @param len		length of pattern (number of 'characters')
 */
 
-/* TODO: Move failsafe code under #if blocks */
 /* TODO: Document how the tables work in process (O(1) search) */
 /* Generally: i is index in array, j, k are actual lengths
 i.e. '0':  i=0, j=k=1 */
@@ -812,24 +832,28 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				/* flip bit */
 				/* Move (box/8) bytes and change (box%8) bit */
 				assert(box <= BOT_size);
-				//BOT += box / 8;
 				temp_ptr = (char*) (BOT + (int) (box/8));
 				flip = 128;
 				for (j = 0; j < box % 8; j++) {
 					flip /= 2;
 				}
 				if (((*temp_ptr) &flip) != 0) {
-					printf("bad dequeue\n");
+					/* Hotfix mentioned in FAILSAFE_MODE. Should a bad
+					item be queued, it will be detected here when the boxes
+					are being recalculated. When updating boxes, if box
+					had already occured, then invalid and simply get next
+					from queue. */
 					goto end_p; //HOTFIX
+					/*
 					string = longs_to_string(arr,len);
 					printf("string: %s\n", string);
 					printf("valid: %d\n", deep_check(string,len));
 					printf("valid_l: %d\n", deep_check_l(arr,len));
+					assert(((*temp_ptr) & flip) == 0);
+					*/
 				}
-				assert(((*temp_ptr) & flip) == 0);
 				*temp_ptr ^= flip;
 				if (DEBUG_V2) printf("Updated BOT entry %llu\n", box);
-				//BOT -= box / 8;
 			}
 			eloop:
 			/* update LOT */
@@ -917,7 +941,11 @@ void process(int depth, unsigned long long *word_arr, int len) {
 			/* TODO: Figure out why invalids are getting put here
 			(suspect it's due to a multiplication after a check to
 			'setup' next one, which it then queues without checking)*/
+			#if FAILSAFE_MODE >= 2
 			if (deep_check_l(arr,count-1)) {	/* Failsafe check */
+			#else
+			if (1) {
+			#endif
 				if (my_id != ROOT_PROCESS) {
 					/* TODO: swap to count-1 */
 					MPI_Send(&i, 1, MPI_INT, ROOT_PROCESS, EXPECT_QUEUE_TAG,
@@ -1180,7 +1208,15 @@ void process(int depth, unsigned long long *word_arr, int len) {
 				if (((*temp_ptr) &flip) != 0) {
 					printf("valid: %d\n", deep_check_l(arr,len));
 				}
+				/* If failsafe enabled, assert to verify working correctly.
+				If not,	and problem occurs, just skip this queued item */
+				#if FAILSAFE_MODE > 0
 				assert(((*temp_ptr) & flip) == 0);
+				#else
+				if (((*temp_ptr) & flip) != 0) {
+					goto end_p; /* Documented above */
+				}
+				#endif
 				*temp_ptr ^= flip;
 			} else {
 				o_valid = 0;
@@ -1256,7 +1292,7 @@ void process(int depth, unsigned long long *word_arr, int len) {
 	free(string);
 }
 
-/*	checks if the last character added to a pattern is box-valid
+/*  Checks if the last character added to a pattern is box-valid
  *	(i.e. the box ending in the len'th character is never repeated)
  *
  *	@param pattern	pattern to be checked, stored as a string
@@ -1275,7 +1311,9 @@ int box_valid(char* pattern, int len) {
 	 * optimisation: skip if boxes too long (> alpha_size) TODO
 	*/
 	/* Find box */
-	assert(b1_start <= max_word_size[alpha_size]);
+	#if FAILSAFE_MODE >= 1	
+		assert(b1_start <= max_word_size[alpha_size]);
+	#endif
 	c_end = pattern[b1_start--];
 	while (b1_start >= 0) {
 		c = pattern[b1_start];
@@ -1336,8 +1374,7 @@ int box_valid(char* pattern, int len) {
 
 /*************************** Utility Functions ********************************/
 
-
-/* 	Performs a deep check of a pattern stored as a string
+/*  Performs a deep check of a pattern stored as a string
 *	in which all boxes inside the pattern are checked for repeats, not
 *  	just the last box added.
 *
@@ -1385,7 +1422,6 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 	int *LOT2 = malloc(sizeof(int) * alpha_size);
 	memset(BOT2, 0, BOT_size/8);
 	memset(LOT2, 0, alpha_size * sizeof(int));
-	//printf("\n");
 
 	if (len % chars_per_long != 0) {
 		size++;	/* Extra long if needed */
@@ -1417,49 +1453,53 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 			else {
 				letter = (word_v / exponent);
 			}
-			//printf("i: %d, j: %d, exponent: %llu\n", i,j, exponent);
+			#if FAILSAFE_MODE >= 1
 			if (letter >= alpha_size) {
-				printf("\nletter: %d, i: %d, j: %d, size: %d\n", letter,i,j, size);
-				printf("count: %d, word_v: %llu, exponent: %llu\n", count, word_v, exponent);
+				/* If assert would fail, print nearby situation.
+				(provides some debug information in a crash) */
+				printf("Assertion failed: letter >= alpha_size\n");
+				printf("\nletter: %d, i: %d, j: %d, size: %d\n",
+					letter,i,j, size);
+				printf("count: %d, word_v: %llu, exponent: %llu\n",
+					count, word_v, exponent);
 				char *string = longs_to_string(word_arr, len);
 				printf("word: %s\n", string);
 				free(string);
+				assert(letter < alpha_size);
 			}
-			assert(letter < alpha_size);
+			#endif
 			/* Compare to LOT */
 			lc = LOT2[letter];
 			if (lc != 0) { /* box occured */
-				if (j+1 + (i*chars_per_long) - lc > alpha_size) { /* internal box exists */
-					goto eloop;
+				if (j+1 + (i*chars_per_long) - lc > alpha_size) {
+					goto eloop; /* internal box exists. Skip */
 				}
-			
 				/* Calculate box */
 				exponent_2 = exp_temp;
 				temp = old_word_v;
 				temp_int = lc / chars_per_long;
 				if (lc % chars_per_long == 0 && lc != 0) temp_int--;
 				if (temp_int == i) {
-				//if (((i * chars_per_long + j) / chars_per_long)
-				//		== (lc / chars_per_long)) {
 					/* Handle boxes in this long */
 					temp_int = lc % chars_per_long;
-					for (k = 1; k < temp_int; k++) {	/* remove left of box */
+					for (k = 1; k < temp_int; k++) { /* remove left of box */
 						temp %= exponent_2;
 						exponent_2 /= alpha_size;
 					}
 					box = temp / exponent;	/* remove right of box */
-					/*DELME*/
+					#if FAILSAFE_MODE >= 1
 					if (box > BOT_size) {
+						/* If assert would fail, print nearby situation.
+					   (provides some debug information in a crash) */
 						printf("<Assertion failed\nbox == %llu\n", box);
 						printf("<len: %d, i: %d, j: %d, word_v == %llu\n",len,i,j,word_arr[i]);
 						printf("<lc: %d, k: %d, count: %d, letter: %d\n",lc,k,count, letter);
 						printf("<string: %s\n", longs_to_string(word_arr, len));
+						assert(box <= BOT_size);
 					}
-					/*<DELME>*/
-					assert(box <= BOT_size);
+					#endif	
 				}
 				else {
-					/* TODO: Test */
 					/* handle boxes that spills over to previous long */
 					CALC_SPILLOVER_BOX(lc, temp, exponent, exponent_2, exponent_3, word_arr,j, box,i);
 					assert(box <= BOT_size);
@@ -1477,7 +1517,16 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 				if (DEBUG_V2) printf(">c == %d\n", c);
 				if (c == 0) {
 					if (DEBUG_V2) printf(">updating box\n");
+					/* If failsafe enabled, assert to verify working correctly.
+					If not,	and problem occurs, just report INVALID */
+					#if FAILSAFE_MODE > 0
 					assert(((*temp_ptr) & flip) == 0);
+					#else
+					if (((*temp_ptr) & flip) != 0) {
+						valid = INVALID;
+						goto end;
+					}
+					#endif
 					*temp_ptr ^= flip;
 				} else {
 					valid = INVALID;
@@ -1497,10 +1546,13 @@ int deep_check_l(unsigned long long *word_arr, int len) {
 	end:
 	free(BOT2);
 	free(LOT2);
+
+#if FAILSAFE_MODE >= 3
 	/* Temporary assert to confirm all is working */
 	temp_ptr = longs_to_string(word_arr, len);
 	assert(valid == deep_check(temp_ptr, len));
 	free(temp_ptr);
+#endif
 	return valid;
 }
 
@@ -1514,7 +1566,7 @@ char *longs_to_string(unsigned long long *arr, int len) {
 	char letter, *string = malloc(sizeof(char) * (len+1));
 	int i, j, count;
 	unsigned long long word_v;
-	int size = (int) (len / chars_per_long);	/* # longs */
+	int size = (int) (len / chars_per_long); /* # longs */
 	if (len % chars_per_long != 0) {
 		size++;
 	}
@@ -1523,7 +1575,7 @@ char *longs_to_string(unsigned long long *arr, int len) {
 		if (i < size - 1) { /* Non-last -> full long */
 			count = chars_per_long;
 		}
-		else {	/* last long, could be < chars_per_long */
+		else { /* last long, could be < chars_per_long */
 			count = len - (i * chars_per_long);
 		}
 		for (j = count-1; j >= 0; j--) { /* Get chars from long */
@@ -1536,8 +1588,6 @@ char *longs_to_string(unsigned long long *arr, int len) {
 			string[i * chars_per_long + j] = letter;
 			word_v /= alpha_size;
 		}
-		//string[i * chars_per_long + j] = word_v % alpha_size;
-
 	}
 	string[len] = '\0';
 	return string;
@@ -1556,10 +1606,7 @@ unsigned long long *string_to_longs(char *string, int len) {
 	if (len % chars_per_long != 0) {
 		size++;
 	}
-	//arr = malloc(sizeof(unsigned long long) * size);
-	//for (i = 0; i < size; i++) {
-	//	arr[i] = 0;
-	//} /* Make as big as possibly needed */
+	/* Make as big as possibly needed */
 	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
 	for (i = 0; i < max_longs_needed; i++) {
 		arr[i] = 0;
@@ -1613,7 +1660,6 @@ unsigned long long *string_to_longs(char *string, int len) {
 *
 *	@param 	save_name	File name to be saved to
 */
-/* TODO: Optimisation: Move to queue and use transversal to get data without dequeueing */
 
 void store_queue_to_file(char *save_name) {
 	FILE *file;
@@ -1635,32 +1681,34 @@ void store_queue_to_file(char *save_name) {
 		save_name[swap_index] = '0' + current_save_number;
 		current_save_number++;
 	}
-	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
 	file = fopen(save_name,"w");
 	if (!file) {
-		printf("Unable to create file. ");
-		printf("Please create directory 'storage' in root of this repo\n");
-		/* TODO: make instruction at top? */
+		fprintf(stderr, "Unable to create file. ");
+		fprintf(stderr,
+			"Please create directory 'storage' in root of this repo\n");
 		return;
 	}
+	arr = malloc(sizeof(unsigned long long) * max_longs_needed);
 	queue_size = get_queue_size_l();
 	fprintf(file, "%d\n", alpha_size);
 	if (PRINT_SAVE_LOAD) {
 		printf("Storing queue: file: '%s'. Queue at start: %llu\n", save_name, queue_size);
 	}
 	/* Store current max */
-	fprintf(file, "%d", max_length);
-	for (i = 0; i < max_longs_needed; i++) {
-		fprintf(file, " %llu", max_word_l[i]);
+	if (STORE_MAX) {
+		fprintf(file, "%d", max_length);
+		for (i = 0; i < max_longs_needed; i++) {
+			fprintf(file, " %llu", max_word_l[i]);
+		}
+		fprintf(file, "\n");
 	}
-	fprintf(file, "\n");
 	/* Store the queue */
 	while (queue_size) {
 		for (i = 0; i < max_longs_needed; i++) {
 			arr[i] = 0;
 		}
 		if (!dequeue_l(arr, &size)) {
-			printf("error dequeueing\n");
+			fprintf(stderr, "error dequeueing\n");
 			goto close_s;
 			return;
 		}
@@ -1675,6 +1723,7 @@ void store_queue_to_file(char *save_name) {
 		printf("Storing queue: Queue at end: %llu\n", queue_size);
 	}
 	close_s:
+	free(arr);
 	fclose(file);
 	return;
 }
@@ -1711,22 +1760,22 @@ void restore_queue_from_file(char *save_name) {
 	fscanf(file, "%d", &rec);
 	/* Only read from a file with same alpha_size */
 	if (rec != alpha_size) {
-		printf("invalid file to read from.\n");
-		printf("alpha_size: %d, file_alpha_size: %d\n", alpha_size, rec);
+		fprintf(stderr, "invalid file to read from.\n");
+		fprintf(stderr,
+			"alpha_size: %d, file_alpha_size: %d\n", alpha_size, rec);
 		goto close_r;
 	}
-	//if (STATUS) {
-	//	printf("Restoring queue: Queue at start: %llu\n", get_queue_size_l());
-	//}
 	/* Get entries: size followed by longs of array */
-	printf("Restoring queue: file: '%s'\n", save_name);
+	if (PRINT_SAVE_LOAD) {
+		printf("Restoring queue: file: '%s'\n", save_name);
+	}
 	while (fscanf(file, "%d", &rec) > 0) {
 		/* get longs */
 		for (i = 0; i < max_longs_needed; i++) {
 			if (fscanf(file, "%llu", &value) <= 0) {
 				/* If a long is missing */
-				printf("unable to retrieve queue entry. ");
-				printf("Insufficient long entries. i: %d\n", i);
+				fprintf(stderr, "unable to retrieve queue entry. ");
+				fprintf(stderr, "Insufficient long entries. i: %d\n", i);
 				goto close_r;
 			}
 			arr[i] =  value;
@@ -1741,6 +1790,7 @@ void restore_queue_from_file(char *save_name) {
 		printf("Restoring queue: Queue at end: %llu\n", get_queue_size_l());
 	}
 	close_r:
+	free(arr);
 	fclose(file);
 	return;
 
