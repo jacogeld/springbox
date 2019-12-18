@@ -2,8 +2,8 @@ Finds the longest string that has no repeated boxes. Utilises MPI to run
 multiple workers at once. Relies on a queue-based system to handle jobs
 between workers.
 
-**	For exact setup,compile and execution instructions	**
-**				see the 'search.c' file 				**
+**  For exact setup,compile and execution instructions  **
+**              see the 'search.c' file                 **
 
 There are various configurations available (search depth, defaults,
 displaying of debugging information / status update, etc).
@@ -38,10 +38,10 @@ They will be stored in a directory 'saves', numbered as:
 OUTPUT
 Many outputs can be controlled via definitions in the config file.
 This includes:
-Debug output 	- for future additions if needed
-Status updates	- general details of current run
-Maximums		- Whether to print when a new max is found
-Save/load		- Whether to print when a save/load occurs
+Debug output    - for future additions if needed
+Status updates  - general details of current run
+Maximums        - Whether to print when a new max is found
+Save/load       - Whether to print when a save/load occurs
 
 FAILSAFE_MODE
 Since this is a computationally-heavy code, various levels of

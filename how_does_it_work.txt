@@ -64,3 +64,9 @@ d) Enqueue invalidity problem needs to be fixed (see search.c)
 	-> guarentees no pointless overhead
 
 e) Rework the bit-table to behave better (no void*)
+
+f) Rework how characters are added to the pattern.
+	e.g. instead of going '0','1',...'n', insert the least-used character
+	in the pattern to try avoid doubles unless they're needed
+ 
+g) Remove debugging code if absolutely not needed (less 'if (0)' cases)
